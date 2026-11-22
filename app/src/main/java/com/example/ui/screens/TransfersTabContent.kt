@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -35,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -50,6 +52,7 @@ import com.example.viewmodel.KodUiState
 fun TransfersTabContent(
     state: KodUiState,
     onCancelTask: (String) -> Unit,
+    onRetryTask: (String) -> Unit,
     onOpenDownloaded: (TransferTask) -> Unit,
     onClearFinished: () -> Unit,
     modifier: Modifier = Modifier
@@ -78,7 +81,7 @@ fun TransfersTabContent(
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 EmptyFolderState(
                     title = "当前没有传输任务",
-                    subtitle = "您上传到 KodBox 或下载到本地的文件进度将实时显示在此"
+                    subtitle = "您上传到网盘或下载到本地的文件进度将实时显示在此"
                 )
             }
         } else {
@@ -123,7 +126,7 @@ fun TransfersTabContent(
                                     )
                                     val statusLabel = when (task.status) {
                                         TransferStatus.RUNNING -> "${KodFormatters.formatBytes(task.bytesTransferred)} / ${KodFormatters.formatBytes(task.totalBytes)}"
-                                        TransferStatus.COMPLETED -> if (task.type == TransferType.UPLOAD) "已上传到 KodBox" else "已保存到本地 (${KodFormatters.formatBytes(task.bytesTransferred)})"
+                                        TransferStatus.COMPLETED -> if (task.type == TransferType.UPLOAD) "已上传到网盘" else "已保存到本地 (${KodFormatters.formatBytes(task.bytesTransferred)})"
                                         TransferStatus.FAILED -> task.errorMessage.ifBlank { "传输失败" }
                                         TransferStatus.CANCELLED -> "已取消"
                                     }
@@ -165,14 +168,40 @@ fun TransfersTabContent(
                                         }
                                     }
                                     TransferStatus.FAILED -> {
-                                        Icon(
-                                            Icons.Filled.Error,
-                                            contentDescription = "失败",
-                                            tint = MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.padding(10.dp)
-                                        )
+                                        if (task.canRetry) {
+                                            IconButton(
+                                                onClick = { onRetryTask(task.id) },
+                                                modifier = Modifier.testTag("retry_transfer_${task.id}")
+                                            ) {
+                                                Icon(
+                                                    Icons.Filled.Refresh,
+                                                    contentDescription = "重试传输",
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                        } else {
+                                            Icon(
+                                                Icons.Filled.Error,
+                                                contentDescription = "失败",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.padding(10.dp)
+                                            )
+                                        }
                                     }
-                                    TransferStatus.CANCELLED -> Unit
+                                    TransferStatus.CANCELLED -> {
+                                        if (task.canRetry) {
+                                            IconButton(
+                                                onClick = { onRetryTask(task.id) },
+                                                modifier = Modifier.testTag("retry_transfer_${task.id}")
+                                            ) {
+                                                Icon(
+                                                    Icons.Filled.Refresh,
+                                                    contentDescription = "继续传输",
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
 

@@ -1,6 +1,8 @@
 package com.example.data
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import androidx.work.Constraints
@@ -11,13 +13,13 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.example.KodApplication
 import com.example.model.KodAccount
 import com.example.model.SyncDirection
 import com.example.model.SyncFrequency
 import com.example.model.SyncRule
 import com.example.model.SyncRunStatus
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
@@ -31,7 +33,7 @@ data class SyncOutcome(
 
 /**
  * Bidirectional sync engine reconciling an Android Storage Access Framework (SAF)
- * local folder with a remote KodBox directory — requires zero broad storage permissions.
+ * local folder with a remote cloud directory — requires zero broad storage permissions.
  */
 class KodSyncEngine(
     private val context: Context,
@@ -46,9 +48,9 @@ class KodSyncEngine(
                 error("本地同步文件夹已不存在或权限已失效")
             }
 
-            // 1. Fetch remote KodBox directory listing
+            // 1. Fetch remote directory listing
             val remoteListing = apiClient.listPath(account, rule.remotePath).getOrElse { err ->
-                error("读取 KodBox 目标文件夹失败：${err.message}")
+                error("读取网盘目标文件夹失败：${err.message}")
             }
             val remoteFilesByName = remoteListing.items
                 .filterNot { it.isFolder }
@@ -167,6 +169,15 @@ class KodSyncEngine(
     companion object {
         private const val WORK_PREFIX = "kodnext_sync_"
 
+        fun isUnmeteredWifiConnected(context: Context): Boolean {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
+            val activeNetwork = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(activeNetwork) ?: return false
+            return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+        }
+
         fun scheduleRule(context: Context, rule: SyncRule) {
             val workManager = WorkManager.getInstance(context)
             val workName = "$WORK_PREFIX${rule.id}"
@@ -205,38 +216,48 @@ class KodSyncWorker(
 
     override suspend fun doWork(): Result {
         val ruleId = inputData.getString(KEY_RULE_ID) ?: return Result.failure()
-        val store = KodAccountStore(applicationContext)
-        val rules = store.syncRulesFlow.first()
-        val rule = rules.find { it.id == ruleId } ?: return Result.success()
+        val container = (applicationContext as? KodApplication)?.container ?: return Result.failure()
+        val syncRepo = container.syncRepository
+        val authRepo = container.authRepository
+        val fileRepo = container.fileRepository
+
+        val rule = syncRepo.getRuleById(ruleId) ?: return Result.success()
         if (!rule.enabled) return Result.success()
 
-        val accounts = store.accountsFlow.first()
-        val account = accounts.find { it.id == rule.accountId } ?: return Result.success()
+        val account = authRepo.getAccountById(rule.accountId) ?: return Result.success()
+        authRepo.hydrateSession(account)
 
-        val apiClient = KodBoxApiClient()
-        val engine = KodSyncEngine(applicationContext, apiClient)
-        val outcome = engine.executeSyncRule(account, rule)
+        val outcome = syncRepo.executeSyncRule(account, rule)
 
         return outcome.fold(
             onSuccess = { res ->
-                store.saveOrUpdateSyncRule(
+                syncRepo.saveRule(
                     rule.copy(
                         lastSyncTime = System.currentTimeMillis(),
                         lastStatus = SyncRunStatus.SUCCESS,
                         lastSummary = res.summary
-                    )
+                    ),
+                    rescheduleWorker = false
                 )
+                if (res.uploadedCount > 0) {
+                    fileRepo.invalidatePath(account.id, rule.remotePath)
+                }
                 Result.success()
             },
             onFailure = { err ->
-                store.saveOrUpdateSyncRule(
+                syncRepo.saveRule(
                     rule.copy(
                         lastSyncTime = System.currentTimeMillis(),
                         lastStatus = SyncRunStatus.ERROR,
                         lastSummary = err.message ?: "后台同步失败"
-                    )
+                    ),
+                    rescheduleWorker = false
                 )
-                Result.retry()
+                val isNonRetryable = KodBoxApiClient.isAuthFailure(err) ||
+                    err.message?.contains("权限已失效") == true ||
+                    err.message?.contains("无法访问本地同步目录") == true ||
+                    runAttemptCount >= 3
+                if (isNonRetryable) Result.failure() else Result.retry()
             }
         )
     }

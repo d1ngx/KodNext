@@ -7,10 +7,9 @@ enum class ThemePreference(val label: String) {
 }
 
 enum class MainTab(val label: String) {
-    FILES("网盘"),
-    MEDIA("相册"),
-    SHARED("协作"),
-    SYNC("同步"),
+    HOME("首页"),
+    FILES("文件"),
+    TRANSFERS("传输"),
     ME("我的")
 }
 
@@ -210,7 +209,7 @@ data class KodAdminPlugin(
 )
 
 data class KodAdminOverview(
-    val systemName: String = "KodBox",
+    val systemName: String = "网盘",
     val systemDesc: String = "",
     val totalMembers: Int = 0,
     val members: List<KodAdminMember> = emptyList(),
@@ -268,7 +267,7 @@ data class KodAccount(
     val sizeUse: Long = 0L,
     val sizeMax: Long = 0L,
     val serverVersion: String = "",
-    val siteName: String = "KodBox",
+    val siteName: String = "网盘",
     val personalRootPath: String = "{source:1}/",
     val groupRootPath: String = "{block:enterprise}/",
     val lastLoginAt: Long = System.currentTimeMillis()
@@ -415,13 +414,20 @@ data class TransferTask(
     val totalBytes: Long = 0L,
     val status: TransferStatus = TransferStatus.RUNNING,
     val errorMessage: String = "",
-    val timestamp: Long = System.currentTimeMillis()
-)
+    val timestamp: Long = System.currentTimeMillis(),
+    val accountId: String = "",
+    val sourceUri: String = "",
+    val mimeType: String = ""
+) {
+    val canRetry: Boolean
+        get() = (status == TransferStatus.FAILED || status == TransferStatus.CANCELLED) &&
+            (type == TransferType.DOWNLOAD || sourceUri.isNotBlank())
+}
 
 data class ServerProbeInfo(
     val normalizedUrl: String,
     val reachable: Boolean,
-    val siteName: String = "KodBox",
+    val siteName: String = "网盘",
     val version: String = "",
     val needCheckCode: Boolean = false,
     val csrfToken: String = "",

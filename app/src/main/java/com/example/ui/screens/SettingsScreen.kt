@@ -1,12 +1,9 @@
 package com.example.ui.screens
 
-import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,13 +19,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CleaningServices
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Extension
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Refresh
@@ -70,34 +62,36 @@ import com.example.BuildConfig
 import com.example.data.KodFormatters
 import com.example.data.KodPluginRegistry
 import com.example.model.AppPreferences
-import com.example.model.KodAccount
 import com.example.model.ThemePreference
-import com.example.ui.components.ConfirmDangerDialog
 import com.example.ui.components.KodUserAvatar
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusWarning
 import com.example.viewmodel.KodUiState
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+/**
+ * Focused App Settings screen (应用设置):
+ * - Server connection status & manual refresh (sync avatar, quota, plugins)
+ * - Appearance, browsing preferences & local cache cleanup
+ * - Online preview plugins catalog & privacy declaration
+ *
+ * Account switching lives in MeTabContent -> AccountSwitcherDialog;
+ * Account profile & sign-out live in AccountCenterScreen;
+ * App info & diagnostics live in MeTabContent -> 关于.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     state: KodUiState,
     imageLoader: ImageLoader,
     onBack: () -> Unit,
     onCheckConnection: () -> Unit,
-    onAddAccount: () -> Unit,
-    onSwitchAccount: (KodAccount) -> Unit,
-    onLogoutAccount: (KodAccount) -> Unit,
     onSetTheme: (ThemePreference) -> Unit,
     onUpdatePrefs: ((AppPreferences) -> AppPreferences) -> Unit,
-    onClearCache: () -> Unit,
-    onCopyDiagnostics: (String) -> Unit
+    onClearCache: () -> Unit
 ) {
     BackHandler(onBack = onBack)
     val account = state.activeAccount
-    var accountPendingRemoval by remember { mutableStateOf<KodAccount?>(null) }
-    var showAboutDialog by remember { mutableStateOf(false) }
     var showPluginsDialog by remember { mutableStateOf(false) }
 
     val activePlugins = remember(state.serverPlugins) {
@@ -107,7 +101,7 @@ fun SettingsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("设置与服务器管理") },
+                title = { Text("应用设置") },
                 navigationIcon = {
                     IconButton(
                         onClick = onBack,
@@ -145,13 +139,13 @@ fun SettingsScreen(
                                 avatarUrl = account.avatarUrl,
                                 displayName = account.displayName,
                                 imageLoader = imageLoader,
-                                size = 48.dp,
+                                size = 46.dp,
                                 containerColor = MaterialTheme.colorScheme.primaryContainer,
                                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = account.displayName,
+                                    text = account.siteName.ifBlank { account.displayName },
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
@@ -184,7 +178,7 @@ fun SettingsScreen(
                             )
                             if (account.serverVersion.isNotBlank()) {
                                 Text(
-                                    text = "· KodBox v${account.serverVersion}",
+                                    text = "· 服务端 v${account.serverVersion}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -223,92 +217,14 @@ fun SettingsScreen(
 
                         FilledTonalButton(
                             onClick = onCheckConnection,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("settings_check_connection_button")
                         ) {
                             Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("检测连接、同步头像与插件列表")
                         }
-                    }
-                }
-            }
-
-            // Multi-Account Switcher
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(modifier = Modifier.padding(vertical = 8.dp)) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 18.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("多服务器账号管理", style = MaterialTheme.typography.titleMedium)
-                        FilledTonalButton(onClick = onAddAccount) {
-                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("添加服务器")
-                        }
-                    }
-
-                    state.accounts.forEach { acc ->
-                        val isCurrent = acc.id == account?.id
-                        ListItem(
-                            headlineContent = {
-                                Text(
-                                    acc.displayName,
-                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            supportingContent = {
-                                Text(
-                                    acc.hostLabel,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = JetBrainsMonoFamily
-                                )
-                            },
-                            leadingContent = {
-                                KodUserAvatar(
-                                    avatarUrl = acc.avatarUrl,
-                                    displayName = acc.displayName,
-                                    imageLoader = imageLoader,
-                                    size = 38.dp,
-                                    containerColor = if (isCurrent) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.surfaceContainerHigh
-                                    },
-                                    contentColor = if (isCurrent) {
-                                        MaterialTheme.colorScheme.onPrimary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface
-                                    }
-                                )
-                            },
-                            trailingContent = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (isCurrent) {
-                                        Icon(
-                                            Icons.Filled.CheckCircle,
-                                            contentDescription = "当前账号",
-                                            tint = StatusSuccess,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-                                    IconButton(onClick = { accountPendingRemoval = acc }) {
-                                        Icon(
-                                            Icons.Filled.DeleteOutline,
-                                            contentDescription = "移除账号",
-                                            tint = MaterialTheme.colorScheme.error
-                                        )
-                                    }
-                                }
-                            },
-                            modifier = Modifier.clickable { if (!isCurrent) onSwitchAccount(acc) }
-                        )
                     }
                 }
             }
@@ -342,7 +258,11 @@ fun SettingsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("显示隐藏文件", style = MaterialTheme.typography.bodyLarge)
-                            Text("显示以 . 开头的系统或配置文件", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                "显示以 . 开头的系统或配置文件",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                         Switch(
                             checked = state.preferences.showHiddenFiles,
@@ -357,7 +277,11 @@ fun SettingsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("加载图片缩略图", style = MaterialTheme.typography.bodyLarge)
-                            Text("在文件列表和网格视图中预览云端缩略图", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                "在文件列表和网格视图中预览云端缩略图",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                         Switch(
                             checked = state.preferences.showThumbnails,
@@ -368,26 +292,31 @@ fun SettingsScreen(
                     HorizontalDivider()
 
                     ListItem(
-                        headlineContent = { Text("清理本地缩略图缓存") },
-                        supportingContent = {
+                        headlineContent = { Text("清除本地缓存") },
+                        supportingContent = { Text("仅清理本地缩略图与临时预览缓存，不影响云端文件") },
+                        leadingContent = { Icon(Icons.Filled.CleaningServices, contentDescription = null) },
+                        trailingContent = {
                             Text(
-                                "当前已占用 ${KodFormatters.formatBytes(state.cacheSizeBytes)}，清理不影响云端文件"
+                                text = KodFormatters.formatBytes(state.cacheSizeBytes),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         },
-                        leadingContent = { Icon(Icons.Filled.CleaningServices, contentDescription = null) },
-                        modifier = Modifier.clickable(onClick = onClearCache)
+                        modifier = Modifier
+                            .clickable(onClick = onClearCache)
+                            .testTag("settings_clear_cache_item")
                     )
                 }
             }
 
-            // About & Diagnostics Section
+            // Extensions & Privacy
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Column(modifier = Modifier.padding(vertical = 8.dp)) {
                     Text(
-                        text = "关于与扩展支持",
+                        text = "扩展与隐私",
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
                     )
@@ -426,50 +355,25 @@ fun SettingsScreen(
                             )
                         }
                     )
-
-                    ListItem(
-                        headlineContent = { Text("关于 KodNext") },
-                        supportingContent = {
-                            val serverVer = account?.serverVersion?.takeIf { it.isNotBlank() }?.let { " · 服务端 v$it" }.orEmpty()
-                            Text("版本 v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})$serverVer")
-                        },
-                        leadingContent = {
-                            Icon(
-                                imageVector = Icons.Filled.Info,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        },
-                        trailingContent = {
-                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
-                        },
-                        modifier = Modifier
-                            .clickable { showAboutDialog = true }
-                            .testTag("settings_about_item")
-                    )
                 }
             }
-        }
-    }
 
-    accountPendingRemoval?.let { target ->
-        ConfirmDangerDialog(
-            title = "移除服务器账号",
-            message = "确定退出并移除「${target.displayName} (${target.hostLabel})」吗？本地保存的登录凭据和同步会话将被清除，不会删除云端数据。",
-            confirmLabel = "确认移除",
-            onConfirm = {
-                val acc = target
-                accountPendingRemoval = null
-                onLogoutAccount(acc)
-            },
-            onDismiss = { accountPendingRemoval = null }
-        )
+            // Quiet version caption at bottom
+            Text(
+                text = "KodNext v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .padding(vertical = 4.dp)
+            )
+        }
     }
 
     if (showPluginsDialog) {
         AlertDialog(
             onDismissRequest = { showPluginsDialog = false },
-            title = { Text("已适配的 KodBox 预览插件 (${activePlugins.size})") },
+            title = { Text("已适配的网盘预览插件 (${activePlugins.size})") },
             text = {
                 Column(
                     modifier = Modifier
@@ -479,7 +383,7 @@ fun SettingsScreen(
                 ) {
                     Text(
                         text = if (state.serverPlugins.isNotEmpty()) {
-                            "以下插件已从您的 KodBox 服务器动态同步，点击对应格式文件时将自动调用："
+                            "以下插件已从您的网盘服务器动态同步，点击对应格式文件时将自动调用："
                         } else {
                             "当前展示内置兼容插件目录，检测到服务器插件后将自动更新："
                         },
@@ -516,96 +420,6 @@ fun SettingsScreen(
             confirmButton = {
                 TextButton(onClick = { showPluginsDialog = false }) {
                     Text("知道了")
-                }
-            }
-        )
-    }
-
-    if (showAboutDialog) {
-        val diagnosticsText = buildString {
-            appendLine("应用名称: KodNext")
-            appendLine("应用版本: v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})")
-            appendLine("应用包名: ${BuildConfig.APPLICATION_ID}")
-            appendLine("Android 系统: Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-            if (account != null) {
-                appendLine("KodBox 站点: ${account.siteName} (${account.hostLabel})")
-                appendLine("KodBox 版本: ${account.serverVersion.ifBlank { "未知" }}")
-            }
-            appendLine("已发现插件 (${activePlugins.size}): ${activePlugins.joinToString(", ") { it.name }}")
-        }.trim()
-
-        AlertDialog(
-            onDismissRequest = { showAboutDialog = false },
-            icon = {
-                Icon(
-                    imageVector = Icons.Filled.Info,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            },
-            title = { Text("关于 KodNext") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "KodNext 是一款面向私有部署 KodBox 网盘的原生安卓客户端，结合清爽高效的移动交互体验与完整的 KodBox 空间、外链、协作、双向同步及多格式在线插件能力。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text("版本：v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})", style = MaterialTheme.typography.labelMedium)
-                            Text("包名：${BuildConfig.APPLICATION_ID}", style = MaterialTheme.typography.labelSmall, fontFamily = JetBrainsMonoFamily)
-                            Text("系统：Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})", style = MaterialTheme.typography.labelSmall)
-                            if (account != null) {
-                                Text(
-                                    "当前服务端：KodBox ${account.serverVersion.ifBlank { "未知版本" }}",
-                                    style = MaterialTheme.typography.labelSmall
-                                )
-                            }
-                        }
-                    }
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf("Material 3 原生", "Media3 音视频流", "OnlyOffice/CAD/EPUB", "零存储权限").forEach { tag ->
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
-                            ) {
-                                Text(
-                                    text = tag,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        onCopyDiagnostics(diagnosticsText)
-                        showAboutDialog = false
-                    }
-                ) {
-                    Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("复制诊断信息")
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showAboutDialog = false }) {
-                    Text("关闭")
                 }
             }
         )

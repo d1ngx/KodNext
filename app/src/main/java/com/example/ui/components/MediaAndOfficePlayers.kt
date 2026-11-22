@@ -83,6 +83,7 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import com.example.data.KodBoxApiClient
 import com.example.data.KodFormatters
 import com.example.model.KodAccount
 import com.example.model.KodFileItem
@@ -684,8 +685,7 @@ fun KodPluginWebViewPreview(
                             allowFileAccess = false
                             allowContentAccess = false
                             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                            userAgentString =
-                                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                            userAgentString = KodBoxApiClient.buildAndroidUserAgent()
                         }
                         webChromeClient = object : WebChromeClient() {
                             override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -793,7 +793,7 @@ fun KodPluginWebViewPreview(
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "「${selectedPlugin.title}」插件当前未就绪或尝试跳转至 KodBox H5 网页端界面，已自动拦截以保持原生体验。",
+                                text = "「${selectedPlugin.title}」插件当前未就绪或尝试跳转至网盘 H5 网页端界面，已自动拦截以保持原生体验。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center

@@ -1,11 +1,11 @@
 <resources>
     <string name="app_name">KodNext</string>
-    <string name="login_subtitle">连接您的私有 KodBox 云盘</string>
+    <string name="login_subtitle">连接您的云端网盘</string>
     <string name="login_server_url_label">服务器地址</string>
     <string name="login_server_url_placeholder">https://cloud.example.com</string>
     <string name="login_username_label">账号 / 邮箱 / 手机号</string>
     <string name="login_password_label">登录密码</string>
-    <string name="login_token_label">AccessToken（免密直连）</string>
+    <string name="login_scan_qr">扫码登录</string>
     <string name="login_captcha_label">验证码</string>
     <string name="login_submit">登录网盘</string>
     <string name="login_testing">正在连接服务器…</string>

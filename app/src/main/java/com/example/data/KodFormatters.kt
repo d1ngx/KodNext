@@ -54,7 +54,7 @@ object KodFormatters {
     fun normalizeServerUrl(rawInput: String): Result<String> {
         val trimmed = rawInput.trim().trimEnd('/')
         if (trimmed.isEmpty()) {
-            return Result.failure(IllegalArgumentException("请输入私有 KodBox 服务器地址"))
+            return Result.failure(IllegalArgumentException("请输入服务器地址"))
         }
         val lower = trimmed.lowercase(Locale.US)
         if (lower.startsWith("javascript:") || lower.startsWith("file:") || lower.startsWith("content:") || lower.startsWith("data:")) {

@@ -213,7 +213,7 @@ fun FileActionBottomSheet(
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                ActionSheetRow(icon = Icons.Filled.Label, label = "KodBox 颜色标签", onClick = onManageTags)
+                ActionSheetRow(icon = Icons.Filled.Label, label = "网盘颜色标签", onClick = onManageTags)
                 ActionSheetRow(icon = Icons.Filled.DriveFileRenameOutline, label = "重命名", onClick = onRename)
                 ActionSheetRow(icon = Icons.AutoMirrored.Filled.DriveFileMove, label = "移动到…", onClick = onMove)
                 ActionSheetRow(icon = Icons.Filled.ContentCopy, label = "复制到…", onClick = onCopy)
@@ -342,7 +342,7 @@ fun KodShareConfigDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Filled.Link, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-        title = { Text(if (isEditingExisting) "编辑外链分享权限" else "KodBox 外链分享") },
+        title = { Text(if (isEditingExisting) "编辑外链分享权限" else "网盘外链分享") },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -670,7 +670,7 @@ fun KodTagManagerSheet(
 
             if (availableTags.isEmpty()) {
                 Text(
-                    "暂无自定义标签，可在下方新建 KodBox 标签。",
+                    "暂无自定义标签，可在下方新建网盘颜色标签。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -783,7 +783,7 @@ fun FolderPickerBottomSheet(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = when {
-                            state.isForSyncTarget -> "选择 KodBox 同步目标文件夹"
+                            state.isForSyncTarget -> "选择网盘同步目标文件夹"
                             state.isMove -> "移动 ${state.targetItems.size} 项到"
                             else -> "复制 ${state.targetItems.size} 项到"
                         },
@@ -995,7 +995,7 @@ fun FileDetailsDialog(
                 if (item.ownerName.isNotBlank()) {
                     DetailRow("创建者", item.ownerName)
                 }
-                DetailRow("KodBox 路径", item.path, mono = true)
+                DetailRow("网盘路径", item.path, mono = true)
                 if (item.hashMd5.isNotBlank()) {
                     DetailRow("MD5 校验", item.hashMd5, mono = true)
                 }

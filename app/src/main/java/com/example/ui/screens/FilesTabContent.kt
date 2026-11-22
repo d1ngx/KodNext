@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -11,13 +10,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
@@ -26,23 +25,22 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Business
-import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.FilterList
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Groups
-import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Label
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -51,11 +49,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,8 +69,11 @@ import com.example.model.KodFileItem
 import com.example.model.KodFileTypeCategory
 import com.example.model.KodSpace
 import com.example.model.KodTag
+import com.example.model.SortField
+import com.example.model.SortOrder
 import com.example.model.ViewMode
 import com.example.ui.components.ConnectionErrorCard
+import com.example.ui.components.DirectoryReadmeCard
 import com.example.ui.components.EmptyFolderState
 import com.example.ui.components.NextcloudFileGridCard
 import com.example.ui.components.NextcloudFileListItem
@@ -81,12 +85,14 @@ fun FilesTabContent(
     state: KodUiState,
     imageLoader: ImageLoader,
     thumbnailUrlFor: (KodFileItem) -> String?,
-    onSelectSpace: (KodSpace) -> Unit,
     onRefresh: () -> Unit,
+    onSelectSpace: (KodSpace) -> Unit,
     onBreadcrumbClick: (Int) -> Unit,
     onSelectFileTypeCategory: (KodFileTypeCategory) -> Unit,
     onSelectTagFilter: (KodTag?) -> Unit,
     onOpenFilterSheet: () -> Unit,
+    onToggleViewMode: () -> Unit,
+    onUpdateSort: (SortField, SortOrder) -> Unit,
     onClearSingleTypeFilter: () -> Unit,
     onClearSingleDateFilter: () -> Unit,
     onClearSingleSizeFilter: () -> Unit,
@@ -96,19 +102,41 @@ fun FilesTabContent(
     onItemMoreClick: (KodFileItem) -> Unit,
     onEmptyRecycleBin: () -> Unit,
     onCreateFolderPrompt: () -> Unit,
+    onToggleReadmeExpanded: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var sortMenuExpanded by remember { mutableStateOf(false) }
+
     Column(modifier = modifier.fillMaxSize()) {
-        // KodBox-native inline Parallel Space Ribbon (1-tap switching between Personal, Enterprise, Favorites, Shared, etc.)
-        if (!state.isSearchActive) {
-            KodSpaceRibbon(
-                activeSpace = state.activeSpace,
-                onSelectSpace = onSelectSpace
+        // Compact quick space switcher pills when at top-level in Files tab (no drawer needed)
+        if (!state.isSearchActive && state.breadcrumbs.size <= 1) {
+            val quickSpaces = listOf(
+                KodSpace.PERSONAL,
+                KodSpace.ENTERPRISE,
+                KodSpace.FAVORITES,
+                KodSpace.RECENT,
+                KodSpace.TAGS,
+                KodSpace.RECYCLE_BIN
             )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(quickSpaces, key = { it.name }) { space ->
+                    FilterChip(
+                        selected = state.activeSpace == space,
+                        onClick = { onSelectSpace(space) },
+                        label = { Text(space.label, maxLines = 1) },
+                        modifier = Modifier.testTag("files_space_chip_${space.name.lowercase()}")
+                    )
+                }
+            }
         }
 
-        // Interactive breadcrumb bar + quick Filter button
+        // Clean breadcrumb navigation bar + quick multi-dimensional filter pill
         if (state.breadcrumbs.isNotEmpty() && !state.isSearchActive) {
             Row(
                 modifier = Modifier
@@ -178,6 +206,102 @@ fun FilesTabContent(
                     },
                     modifier = Modifier.testTag("open_filter_chip")
                 )
+            }
+
+            // Nextcloud-inspired clean sub-bar: Sort dropdown + item count + Grid/List toggle
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(start = 12.dp, end = 6.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { sortMenuExpanded = true }
+                                .padding(horizontal = 6.dp, vertical = 6.dp)
+                                .testTag("inline_sort_dropdown")
+                        ) {
+                            Text(
+                                text = "${state.preferences.sortField.label}${if (state.preferences.sortOrder == SortOrder.ASC) "顺序" else "倒序"}",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Icon(
+                                imageVector = Icons.Filled.KeyboardArrowDown,
+                                contentDescription = "切换排序",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = sortMenuExpanded,
+                            onDismissRequest = { sortMenuExpanded = false }
+                        ) {
+                            SortField.entries.forEach { field ->
+                                val selected = state.preferences.sortField == field
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            "${field.label}${if (selected) " (${state.preferences.sortOrder.label})" else ""}",
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    },
+                                    trailingIcon = {
+                                        if (selected) Icon(Icons.Filled.Check, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        val nextOrder = if (selected) {
+                                            if (state.preferences.sortOrder == SortOrder.ASC) SortOrder.DESC else SortOrder.ASC
+                                        } else {
+                                            SortOrder.ASC
+                                        }
+                                        onUpdateSort(field, nextOrder)
+                                        sortMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    if (state.files.isNotEmpty() || state.rawFiles.isNotEmpty()) {
+                        val countText = if (state.files.size != state.rawFiles.size && state.rawFiles.isNotEmpty()) {
+                            "${state.files.size}/${state.rawFiles.size} 项"
+                        } else {
+                            "共 ${state.files.size} 项"
+                        }
+                        Text(
+                            text = countText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onToggleViewMode,
+                    modifier = Modifier.testTag("inline_toggle_view_mode")
+                ) {
+                    Icon(
+                        imageVector = if (state.preferences.viewMode == ViewMode.LIST) {
+                            Icons.Filled.GridView
+                        } else {
+                            Icons.AutoMirrored.Filled.ViewList
+                        },
+                        contentDescription = "切换列表或网格视图",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(21.dp)
+                    )
+                }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
@@ -327,7 +451,7 @@ fun FilesTabContent(
                             subtitle = if (isFiltered) {
                                 "请尝试调整文件名关键词、文件类型、日期或大小筛选条件"
                             } else {
-                                "点击右下角 + 按钮上传文件、新建文件夹或提交 KodBox 离线下载"
+                                "点击右下角 + 按钮上传文件、新建文件夹或提交网盘离线下载"
                             },
                             actionLabel = when {
                                 isFiltered -> "重置筛选条件"
@@ -343,10 +467,24 @@ fun FilesTabContent(
                     }
                 }
                 state.preferences.viewMode == ViewMode.LIST -> {
+                    val readmeItem = state.directoryReadmeItem
+                    val showInlineReadme = readmeItem != null && !state.isSearchActive && !state.searchFilter.hasActiveFilters
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(bottom = 96.dp)
                     ) {
+                        if (showInlineReadme && readmeItem != null) {
+                            item(key = "directory_readme_card_${readmeItem.path}") {
+                                DirectoryReadmeCard(
+                                    item = readmeItem,
+                                    markdownContent = state.directoryReadmeContent,
+                                    isLoading = state.isLoadingDirectoryReadme,
+                                    isExpanded = state.isDirectoryReadmeExpanded,
+                                    onToggleExpanded = onToggleReadmeExpanded,
+                                    onOpenFullPreview = onItemClick
+                                )
+                            }
+                        }
                         items(state.files, key = { it.path }) { item ->
                             NextcloudFileListItem(
                                 item = item,
@@ -367,6 +505,8 @@ fun FilesTabContent(
                     }
                 }
                 else -> {
+                    val readmeItem = state.directoryReadmeItem
+                    val showInlineReadme = readmeItem != null && !state.isSearchActive && !state.searchFilter.hasActiveFilters
                     LazyVerticalGrid(
                         columns = GridCells.Adaptive(minSize = 152.dp),
                         contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 96.dp),
@@ -374,6 +514,22 @@ fun FilesTabContent(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
+                        if (showInlineReadme && readmeItem != null) {
+                            item(
+                                key = "directory_readme_card_${readmeItem.path}",
+                                span = { GridItemSpan(maxLineSpan) }
+                            ) {
+                                DirectoryReadmeCard(
+                                    item = readmeItem,
+                                    markdownContent = state.directoryReadmeContent,
+                                    isLoading = state.isLoadingDirectoryReadme,
+                                    isExpanded = state.isDirectoryReadmeExpanded,
+                                    onToggleExpanded = onToggleReadmeExpanded,
+                                    onOpenFullPreview = onItemClick,
+                                    modifier = Modifier.padding(horizontal = 0.dp)
+                                )
+                            }
+                        }
                         items(state.files, key = { it.path }) { item ->
                             NextcloudFileGridCard(
                                 item = item,
@@ -392,112 +548,3 @@ fun FilesTabContent(
         }
     }
 }
-
-@Composable
-private fun KodSpaceRibbon(
-    activeSpace: KodSpace,
-    onSelectSpace: (KodSpace) -> Unit
-) {
-    val primarySpaces = KodSpace.entries.filter { it.isPrimarySpace }
-    val utilitySpaces = KodSpace.entries.filter { !it.isPrimarySpace }
-
-    LazyRow(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(vertical = 8.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        items(primarySpaces, key = { it.name }) { space ->
-            SpaceRibbonPill(
-                space = space,
-                selected = space == activeSpace,
-                onClick = { onSelectSpace(space) }
-            )
-        }
-
-        item {
-            Box(
-                modifier = Modifier
-                    .padding(horizontal = 2.dp)
-                    .width(1.dp)
-                    .height(20.dp)
-                    .background(MaterialTheme.colorScheme.outlineVariant)
-            )
-        }
-
-        items(utilitySpaces, key = { it.name }) { space ->
-            SpaceRibbonPill(
-                space = space,
-                selected = space == activeSpace,
-                onClick = { onSelectSpace(space) }
-            )
-        }
-    }
-}
-
-@Composable
-private fun SpaceRibbonPill(
-    space: KodSpace,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    val containerColor = if (selected) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerLow
-    }
-    val contentColor = if (selected) {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    }
-
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(12.dp),
-        color = containerColor,
-        border = if (selected) {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
-        } else {
-            null
-        },
-        modifier = Modifier
-            .height(34.dp)
-            .testTag("space_ribbon_${space.name.lowercase()}")
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-            Icon(
-                imageVector = spaceIcon(space),
-                contentDescription = null,
-                tint = if (selected) MaterialTheme.colorScheme.primary else contentColor,
-                modifier = Modifier.size(16.dp)
-            )
-            Text(
-                text = space.label,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                color = contentColor,
-                maxLines = 1
-            )
-        }
-    }
-}
-
-private fun spaceIcon(space: KodSpace): ImageVector = when (space) {
-    KodSpace.PERSONAL -> Icons.Filled.Folder
-    KodSpace.ENTERPRISE -> Icons.Filled.Business
-    KodSpace.FAVORITES -> Icons.Filled.Star
-    KodSpace.SHARED_WITH_ME -> Icons.Filled.Groups
-    KodSpace.RECENT -> Icons.Filled.History
-    KodSpace.FILE_TYPES -> Icons.Filled.Category
-    KodSpace.TAGS -> Icons.Filled.Label
-    KodSpace.RECYCLE_BIN -> Icons.Outlined.DeleteOutline
-}
-

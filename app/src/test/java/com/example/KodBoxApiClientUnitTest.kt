@@ -199,7 +199,17 @@ class KodBoxApiClientUnitTest {
         assertTrue(ooUrl.contains("ext=docx"))
 
         val mediaUrl = api.buildMediaStreamUrl(sampleAccount, mp4)
-        assertTrue(mediaUrl.startsWith("https://cloud.example.com/index.php?explorer/index/fileOut"))
+        assertTrue(mediaUrl.startsWith("https://cloud.example.com/?explorer/index/fileOut"))
         assertTrue(mediaUrl.contains("accessToken=tok_123"))
+        assertTrue(mediaUrl.contains("HTTP_X_PLATFORM_1="))
+    }
+
+    @Test
+    fun androidUserAgentIdentifiesAndroidClientInsteadOfOkHttp() {
+        val ua = KodBoxApiClient.buildAndroidUserAgent()
+        assertTrue(ua.contains("Android"))
+        assertTrue(ua.contains("Mobile"))
+        assertTrue(ua.contains("KodNext/"))
+        assertFalse(ua.lowercase().contains("okhttp"))
     }
 }

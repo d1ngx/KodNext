@@ -165,7 +165,7 @@ fun SharedTabContent(
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 EmptyFolderState(
                                     title = "暂无我的协作",
-                                    subtitle = "您在 KodBox 中发起的团队内部协作共享将集中展示在此处"
+                                    subtitle = "您在网盘中发起的团队内部协作共享将集中展示在此处"
                                 )
                             }
                         }

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -46,14 +47,15 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.example.data.KodBoxApiClient
 import com.example.model.KodAccount
 import com.example.model.KodWorkspaceApp
 import java.net.URLEncoder
 
 /**
- * Full-screen authenticated workspace host for interactive KodBox plugins such as
- * Project (项目管理 `#project`), KodIM (`?plugin/kodIM/`), AI Doc (`#aiDoc`),
- * HelpCenter, Drawio, MindMap, and full Web Admin Console (`#admin`).
+ * Full-screen authenticated web container preserving the 100% authentic KodBox web interface
+ * for official Admin Console (`#admin`), Web Account Center (`#setting/user`), and workspace
+ * plugins (`#project`, `?plugin/kodIM/`, `#aiDoc`, etc.) without mutating or breaking original UI.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
@@ -61,6 +63,7 @@ import java.net.URLEncoder
 fun KodAppWorkspaceScreen(
     account: KodAccount,
     app: KodWorkspaceApp,
+    onCopyUrl: (String) -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -70,6 +73,15 @@ fun KodAppWorkspaceScreen(
 
     val targetUrl = remember(account.id, app.launchUrl, account.accessToken, account.csrfToken) {
         appendAuthParamsIfNeeded(app.launchUrl, account)
+    }
+
+    val subtitle = remember(app.id, account.siteName) {
+        when (app.id.lowercase()) {
+            "admin" -> "${account.siteName} · 官方完整管理后台"
+            "user_setting" -> "${account.siteName} · 官方网页个人中心"
+            "web_portal" -> "${account.siteName} · 完整网页端"
+            else -> "${account.siteName} · 扩展应用"
+        }
     }
 
     BackHandler {
@@ -117,7 +129,7 @@ fun KodAppWorkspaceScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "${account.siteName} · KodBox 插件工作台",
+                            text = subtitle,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -130,10 +142,15 @@ fun KodAppWorkspaceScreen(
                         onClick = onBack,
                         modifier = Modifier.testTag("workspace_app_back_button")
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回网盘")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = { onCopyUrl(app.launchUrl) }
+                    ) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "复制页面地址")
+                    }
                     IconButton(
                         onClick = {
                             webError = null
@@ -149,7 +166,7 @@ fun KodAppWorkspaceScreen(
                             }
                         }
                     ) {
-                        Icon(Icons.Filled.OpenInBrowser, contentDescription = "浏览器打开")
+                        Icon(Icons.Filled.OpenInBrowser, contentDescription = "在浏览器打开")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -208,8 +225,7 @@ fun KodAppWorkspaceScreen(
                                 allowFileAccess = false
                                 allowContentAccess = false
                                 mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                                userAgentString =
-                                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                                userAgentString = KodBoxApiClient.buildAndroidUserAgent()
                             }
                             webChromeClient = object : WebChromeClient() {
                                 override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -223,24 +239,6 @@ fun KodAppWorkspaceScreen(
                                 ): Boolean {
                                     val scheme = request?.url?.scheme?.lowercase().orEmpty()
                                     return scheme != "http" && scheme != "https"
-                                }
-
-                                override fun onPageFinished(view: WebView?, url: String?) {
-                                    super.onPageFinished(view, url)
-                                    // Clean up redundant desktop outer menu chrome when running router-page plugins like #project
-                                    if (app.isRouterPage && !app.id.equals("admin", ignoreCase = true)) {
-                                        view?.evaluateJavascript(
-                                            """
-                                            (function(){
-                                              var style = document.getElementById('kodnext-mobile-trim') || document.createElement('style');
-                                              style.id = 'kodnext-mobile-trim';
-                                              style.textContent = '.app-menu-left, .kod-header-left-menu { display: none !important; } .app-main { left: 0 !important; width: 100% !important; }';
-                                              document.head && document.head.appendChild(style);
-                                            })();
-                                            """.trimIndent(),
-                                            null
-                                        )
-                                    }
                                 }
 
                                 override fun onReceivedError(

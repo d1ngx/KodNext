@@ -28,17 +28,22 @@ sealed interface KodUiEvent {
     data class OpenLocalFile(val file: File, val mimeType: String) : KodUiEvent
 }
 
+enum class LoginStep {
+    SERVER_URL,
+    CREDENTIALS
+}
+
 data class LoginFormState(
+    val step: LoginStep = LoginStep.SERVER_URL,
     val serverUrl: String = "",
     val username: String = "",
     val password: String = "",
-    val accessToken: String = "",
     val checkCode: String = "",
-    val useTokenMode: Boolean = false,
     val isProbing: Boolean = false,
     val isLoggingIn: Boolean = false,
     val probeInfo: ServerProbeInfo? = null,
     val captchaBytes: ByteArray? = null,
+    val infoMessage: String? = null,
     val errorMessage: String? = null
 )
 
@@ -73,6 +78,7 @@ data class KodUiState(
     val accounts: List<KodAccount> = emptyList(),
     val activeAccount: KodAccount? = null,
     val showAddAccountLogin: Boolean = false,
+    val showQrScanner: Boolean = false,
     val preferences: AppPreferences = AppPreferences(),
     val loginForm: LoginFormState = LoginFormState(),
     val serverPlugins: List<KodPluginApp> = emptyList(),
@@ -81,19 +87,30 @@ data class KodUiState(
     val showAppHubSheet: Boolean = false,
     val cacheSizeBytes: Long = 0L,
 
-    // Main workspace navigation
-    val activeTab: MainTab = MainTab.FILES,
+    // Main workspace navigation (4-tab Home-mode: 首页 / 文件 / 传输 / 我的)
+    val activeTab: MainTab = MainTab.HOME,
     val activeSpace: KodSpace = KodSpace.PERSONAL,
     val activeFileTypeCategory: KodFileTypeCategory = KodFileTypeCategory.ALL,
     val currentPath: String = "",
     val currentTitle: String = "个人空间",
     val breadcrumbs: List<BreadcrumbNode> = emptyList(),
 
+    // Home dashboard overview (收藏夹 & 最近文档)
+    val homeFavorites: List<KodFileItem> = emptyList(),
+    val homeRecentFiles: List<KodFileItem> = emptyList(),
+    val isLoadingHome: Boolean = false,
+
     // Files list (rawFiles from server + filtered display files)
     val rawFiles: List<KodFileItem> = emptyList(),
     val files: List<KodFileItem> = emptyList(),
     val isLoadingFiles: Boolean = false,
     val filesError: String? = null,
+
+    // Auto-previewed README.md in the current directory
+    val directoryReadmeItem: KodFileItem? = null,
+    val directoryReadmeContent: String = "",
+    val isLoadingDirectoryReadme: Boolean = false,
+    val isDirectoryReadmeExpanded: Boolean = true,
 
     // Search & multi-dimensional filters
     val isSearchActive: Boolean = false,
@@ -130,18 +147,16 @@ data class KodUiState(
     val pickedSyncRemote: SyncRemoteSelection? = null,
     val transfers: List<TransferTask> = emptyList(),
 
-    // Account Center & Admin Console
+    // Account Center
     val showAccountCenter: Boolean = false,
     val isLoadingAccountCenter: Boolean = false,
     val userDevices: List<KodUserDeviceItem> = emptyList(),
     val userLogs: List<KodUserLogItem> = emptyList(),
-    val showAdminConsole: Boolean = false,
-    val isLoadingAdmin: Boolean = false,
-    val adminOverview: KodAdminOverview? = null,
-    val adminError: String? = null,
 
     // Secondary screens & sheets
     val showSettings: Boolean = false,
+    val showSharedScreen: Boolean = false,
+    val showSyncScreen: Boolean = false,
     val previewState: PreviewState? = null,
     val actionSheetItem: KodFileItem? = null,
     val detailDialogItem: KodFileItem? = null,
@@ -166,22 +181,11 @@ data class KodUiState(
         get() = breadcrumbs.size > 1
 
     /**
-     * Resolves the prominent top-left workspace plugin button (prioritizing `project` 项目管理
-     * or user's pinned workspace app, filtering admin-only plugins for non-admin accounts).
+     * Server-discovered interactive workspace apps visible to the current account role.
      */
     val visibleWorkspaceApps: List<KodWorkspaceApp>
         get() {
             val isAdmin = activeAccount?.isAdmin == true
             return workspaceApps.filter { !it.isAdminOnly || isAdmin }
-        }
-
-    val primaryTopLeftApp: KodWorkspaceApp?
-        get() {
-            val visible = visibleWorkspaceApps
-            if (visible.isEmpty()) return null
-            val pinned = preferences.pinnedAppId.trim()
-            return visible.firstOrNull { it.id.equals(pinned, ignoreCase = true) }
-                ?: visible.firstOrNull { it.id.equals("project", ignoreCase = true) }
-                ?: visible.firstOrNull()
         }
 }

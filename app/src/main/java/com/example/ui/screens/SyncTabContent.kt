@@ -208,7 +208,7 @@ fun SyncTabContent(
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 EmptyFolderState(
                     title = "还没有配置同步文件夹",
-                    subtitle = "选择手机本地文件夹与 KodBox 云盘目录配对，即可自动完成双向增量同步",
+                    subtitle = "选择手机本地文件夹与网盘目录配对，即可自动完成双向增量同步",
                     actionLabel = "添加第一组同步目录",
                     onAction = { showCreateSheet = true }
                 )
@@ -314,7 +314,7 @@ fun SyncTabContent(
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("KodBox 云盘目标文件夹", style = MaterialTheme.typography.labelLarge)
+                            Text("网盘目标文件夹", style = MaterialTheme.typography.labelLarge)
                             Text(
                                 text = effectiveRemoteLabel,
                                 style = MaterialTheme.typography.bodySmall,

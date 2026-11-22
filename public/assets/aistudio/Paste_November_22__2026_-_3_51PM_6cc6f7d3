@@ -1,0 +1,2296 @@
+---  
+You:  
+KodNext 当前架构是否合理？
+整体上比较合理，尤其适合可道云这种需要文件管理、后台同步、大文件上传下载和系统权限集成的应用。
+
+但有三个地方值得进一步优化：
+1. KodViewModel.kt 职责过重：目前所有页面和文件操作都集中在一个 ViewModel，建议逐步拆分成 FilesViewModel、MediaViewModel、SyncViewModel 等。
+2. 后台同步机制：建议使用 WorkManager 管理周期同步，长时间持续传输根据 Android 版本和任务类型采用合适的前台服务或用户发起的数据传输任务。
+3. 数据持久化：建议使用 Room 保存文件元数据、同步规则和传输任务；使用 DataStore 保存普通设置，敏感凭据则使用受 Android Keystore 保护的安全存储方案。  上述分析合理吗，总结给出更完整建议
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/build.gradle.kts)
+Response:
+  import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+  
+  plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.google.devtools.ksp)
+    alias(libs.plugins.secrets)
+    alias(libs.plugins.google.services)
+  }
+  
+  android {
+    namespace = "com.example"
+    compileSdk { version = release(36) { minorApiLevel = 1 } }
+  
+    defaultConfig {
+      applicationId = "com.aistudio.kodnext.vkmrzp"
+      minSdk = 24
+      targetSdk = 36
+      versionCode = 4
+      versionName = "4.0"
+  
+      testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+  
+    // Do not remove or modify these signingConfigs. They are necessary for building, installing,
+    // and updating Android apps in AI Studio.
+    signingConfigs {
+      create("release") {
+        val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
+        storeFile = file(keystorePath)
+        storePassword = System.getenv("STORE_PASSWORD")
+        keyAlias = "upload"
+        keyPassword = System.getenv("KEY_PASSWORD")
+      }
+      create("debugConfig") {
+        storeFile = file("${rootDir}/debug.keystore")
+        storePassword = "android"
+        keyAlias = "androiddebugkey"
+        keyPassword = "android"
+      }
+    }
+  
+    buildTypes {
+      release {
+        isCrunchPngs = false
+        isMinifyEnabled = false
+        proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
+        // AI Studio.
+        signingConfig = signingConfigs.getByName("release")
+      }
+      debug {
+        // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
+        // AI Studio.
+        signingConfig = signingConfigs.getByName("debugConfig")
+      }
+    }
+    compileOptions {
+      sourceCompatibility = JavaVersion.VERSION_11
+      targetCompatibility = JavaVersion.VERSION_11
+    }
+    buildFeatures {
+      compose = true
+      buildConfig = true
+    }
+    testOptions { unitTests { isIncludeAndroidResources = true } }
+    dependenciesInfo {
+      includeInApk = false
+      includeInBundle = true
+    }
+  }
+  
+  // Configure the Secrets Gradle Plugin to use .env and .env.example files
+  // to match the convention used in Web projects.
+  secrets {
+    propertiesFileName = ".env"
+    defaultPropertiesFileName = ".env.example"
+    ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
+  }
+  
+  googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
+  
+  // Some unused dependencies are commented out below instead of being removed.
+  // This makes it easy to add them back in the future if needed.
+  dependencies {
+    implementation(platform(libs.androidx.compose.bom))
+    // implementation(platform(libs.firebase.bom))
+    // implementation(libs.accompanist.permissions)
+    implementation(libs.androidx.activity.compose)
+    // implementation(libs.androidx.camera.camera2)
+    // implementation(libs.androidx.camera.core)
+    // implementation(libs.androidx.camera.lifecycle)
+    // implementation(libs.androidx.camera.view)
+    implementation(libs.androidx.compose.material.icons.core)
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.documentfile)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
+    implementation(libs.androidx.media3.datasource.okhttp)
+    // implementation(libs.androidx.room.ktx)
+    // implementation(libs.androidx.room.runtime)
+    implementation(libs.coil.compose)
+    // implementation(libs.converter.moshi)
+    // implementation(libs.firebase.ai)
+    // Uncomment to use Firestore:
+    // implementation(libs.firebase.firestore)
+  
+    // Uncomment ALL FOUR of the following dependencies together to use Firebase Auth and Google
+    // Sign-In via Credential Manager:
+    // implementation(libs.firebase.auth)
+    // implementation(libs.androidx.credentials)
+    // implementation(libs.androidx.credentials.play.services)
+    // implementation(libs.googleid)
+    // implementation(libs.firebase.appcheck.recaptcha)
+    // implementation(libs.firebase.appcheck.debug)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.core)
+    // implementation(libs.logging.interceptor)
+    // implementation(libs.moshi.kotlin)
+    implementation(libs.okhttp)
+    // implementation(libs.play.services.location)
+    // implementation(libs.retrofit)
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    testImplementation(libs.androidx.core)
+    testImplementation(libs.androidx.junit)
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.robolectric)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.runner)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+    // "ksp"(libs.androidx.room.compiler)
+    // "ksp"(libs.moshi.kotlin.codegen)
+  }
+  
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/AndroidManifest.xml)
+Response:
+  <?xml version="1.0" encoding="utf-8"?>
+  <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+      xmlns:tools="http://schemas.android.com/tools">
+  
+      <uses-permission android:name="android.permission.INTERNET" />
+      <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  
+      <application
+          android:allowBackup="false"
+          android:dataExtractionRules="@xml/data_extraction_rules"
+          android:fullBackupContent="@xml/backup_rules"
+          android:icon="@mipmap/ic_launcher"
+          android:label="@string/app_name"
+          android:networkSecurityConfig="@xml/network_security_config"
+          android:roundIcon="@mipmap/ic_launcher_round"
+          android:supportsRtl="true"
+          android:theme="@style/Theme.MyApplication">
+          <activity
+              android:name=".MainActivity"
+              android:exported="true"
+              android:label="@string/app_name"
+              android:theme="@style/Theme.MyApplication"
+              android:windowSoftInputMode="adjustResize">
+              <intent-filter>
+                  <action android:name="android.intent.action.MAIN" />
+                  <category android:name="android.intent.category.LAUNCHER" />
+              </intent-filter>
+          </activity>
+  
+          <provider
+              android:name="androidx.core.content.FileProvider"
+              android:authorities="${applicationId}.fileprovider"
+              android:exported="false"
+              android:grantUriPermissions="true">
+              <meta-data
+                  android:name="android.support.FILE_PROVIDER_PATHS"
+                  android:resource="@xml/file_paths" />
+          </provider>
+      </application>
+  
+  </manifest>
+  
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodAccountStore.kt, endLine=120, startLine=1)
+Response:
+  package com.example.data
+  
+  import android.content.Context
+  import androidx.datastore.core.DataStore
+  import androidx.datastore.preferences.core.Preferences
+  import androidx.datastore.preferences.core.booleanPreferencesKey
+  import androidx.datastore.preferences.core.edit
+  import androidx.datastore.preferences.core.stringPreferencesKey
+  import androidx.datastore.preferences.preferencesDataStore
+  import com.example.model.AppPreferences
+  import com.example.model.KodAccount
+  import com.example.model.SortField
+  import com.example.model.SortOrder
+  import com.example.model.SyncDirection
+  import com.example.model.SyncFrequency
+  import com.example.model.SyncRule
+  import com.example.model.SyncRunStatus
+  import com.example.model.ThemePreference
+  import com.example.model.ViewMode
+  import kotlinx.coroutines.flow.Flow
+  import kotlinx.coroutines.flow.map
+  import org.json.JSONArray
+  import org.json.JSONObject
+  
+  private val Context.kodDataStore: DataStore<Preferences> by preferencesDataStore(name = "kodnext_prefs")
+  
+  class KodAccountStore(private val context: Context) {
+  
+      private object Keys {
+          val ACCOUNTS_JSON = stringPreferencesKey("accounts_json")
+          val ACTIVE_ACCOUNT_ID = stringPreferencesKey("active_account_id")
+          val VIEW_MODE = stringPreferencesKey("view_mode")
+          val SORT_FIELD = stringPreferencesKey("sort_field")
+          val SORT_ORDER = stringPreferencesKey("sort_order")
+          val SHOW_HIDDEN = booleanPreferencesKey("show_hidden")
+          val SHOW_THUMBNAILS = booleanPreferencesKey("show_thumbnails")
+          val THEME_PREF = stringPreferencesKey("theme_pref")
+          val PINNED_APP_ID = stringPreferencesKey("pinned_app_id")
+          val SYNC_RULES_JSON = stringPreferencesKey("sync_rules_json")
+      }
+  
+      val accountsFlow: Flow<List<KodAccount>> = context.kodDataStore.data.map { prefs ->
+          decodeAccounts(prefs[Keys.ACCOUNTS_JSON].orEmpty())
+      }
+  
+      val activeAccountIdFlow: Flow<String?> = context.kodDataStore.data.map { prefs ->
+          prefs[Keys.ACTIVE_ACCOUNT_ID]
+      }
+  
+      val syncRulesFlow: Flow<List<SyncRule>> = context.kodDataStore.data.map { prefs ->
+          decodeSyncRules(prefs[Keys.SYNC_RULES_JSON].orEmpty())
+      }
+  
+      val preferencesFlow: Flow<AppPreferences> = context.kodDataStore.data.map { prefs ->
+          AppPreferences(
+              viewMode = runCatching { ViewMode.valueOf(prefs[Keys.VIEW_MODE] ?: ViewMode.LIST.name) }.getOrDefault(ViewMode.LIST),
+              sortField = runCatching { SortField.valueOf(prefs[Keys.SORT_FIELD] ?: SortField.NAME.name) }.getOrDefault(SortField.NAME),
+              sortOrder = runCatching { SortOrder.valueOf(prefs[Keys.SORT_ORDER] ?: SortOrder.ASC.name) }.getOrDefault(SortOrder.ASC),
+              showHiddenFiles = prefs[Keys.SHOW_HIDDEN] ?: false,
+              showThumbnails = prefs[Keys.SHOW_THUMBNAILS] ?: true,
+              themePreference = runCatching { ThemePreference.valueOf(prefs[Keys.THEME_PREF] ?: ThemePreference.SYSTEM.name) }.getOrDefault(ThemePreference.SYSTEM),
+              pinnedAppId = prefs[Keys.PINNED_APP_ID] ?: "project"
+          )
+      }
+  
+      suspend fun saveOrUpdateAccount(account: KodAccount, makeActive: Boolean = true) {
+          context.kodDataStore.edit { prefs ->
+              val current = decodeAccounts(prefs[Keys.ACCOUNTS_JSON].orEmpty()).toMutableList()
+              val idx = current.indexOfFirst { it.id == account.id || (it.serverUrl == account.serverUrl && it.username == account.username) }
+              if (idx >= 0) {
+                  current[idx] = account
+              } else {
+                  current.add(0, account)
+              }
+              prefs[Keys.ACCOUNTS_JSON] = encodeAccounts(current)
+              if (makeActive) {
+                  prefs[Keys.ACTIVE_ACCOUNT_ID] = account.id
+              }
+          }
+      }
+  
+      suspend fun setActiveAccount(accountId: String) {
+          context.kodDataStore.edit { prefs ->
+              prefs[Keys.ACTIVE_ACCOUNT_ID] = accountId
+          }
+      }
+  
+      suspend fun removeAccount(accountId: String) {
+          context.kodDataStore.edit { prefs ->
+              val current = decodeAccounts(prefs[Keys.ACCOUNTS_JSON].orEmpty()).filterNot { it.id == accountId }
+              prefs[Keys.ACCOUNTS_JSON] = encodeAccounts(current)
+              if (prefs[Keys.ACTIVE_ACCOUNT_ID] == accountId) {
+                  val nextId = current.firstOrNull()?.id
+                  if (nextId != null) {
+                      prefs[Keys.ACTIVE_ACCOUNT_ID] = nextId
+                  } else {
+                      prefs.remove(Keys.ACTIVE_ACCOUNT_ID)
+                  }
+              }
+          }
+      }
+  
+      suspend fun updatePreferences(transform: (AppPreferences) -> AppPreferences) {
+          context.kodDataStore.edit { prefs ->
+              val current = AppPreferences(
+                  viewMode = runCatching { ViewMode.valueOf(prefs[Keys.VIEW_MODE] ?: ViewMode.LIST.name) }.getOrDefault(ViewMode.LIST),
+                  sortField = runCatching { SortField.valueOf(prefs[Keys.SORT_FIELD] ?: SortField.NAME.name) }.getOrDefault(SortField.NAME),
+                  sortOrder = runCatching { SortOrder.valueOf(prefs[Keys.SORT_ORDER] ?: SortOrder.ASC.name) }.getOrDefault(SortOrder.ASC),
+                  showHiddenFiles = prefs[Keys.SHOW_HIDDEN] ?: false,
+                  showThumbnails = prefs[Keys.SHOW_THUMBNAILS] ?: true,
+                  themePreference = runCatching { ThemePreference.valueOf(prefs[Keys.THEME_PREF] ?: ThemePreference.SYSTEM.name) }.getOrDefault(ThemePreference.SYSTEM),
+                  pinnedAppId = prefs[Keys.PINNED_APP_ID] ?: "project"
+              )
+              val updated = transform(current)
+              prefs[Keys.VIEW_MODE] = updated.viewMode.name
+              prefs[Keys.SORT_FIELD] = updated.sortField.name
+              prefs[Keys.SORT_ORDER] = updated.sortOrder.name
+              prefs[Keys.SHOW_HIDDEN] = updated.showHiddenFiles
+              prefs[Keys.SHOW_THUMBNAILS] = updated.showThumbnails
+              prefs[Keys.THEME_PREF] = updated.themePreference.name
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodDirectoryCache.kt)
+Response:
+  package com.example.data
+  
+  import com.example.model.PathListResult
+  import com.example.model.SortField
+  import com.example.model.SortOrder
+  
+  /**
+   * Thread-safe bounded LRU in-memory cache for KodBox directory listings.
+   * Enables 0ms Stale-While-Revalidate navigation when switching spaces or stepping up breadcrumbs.
+   */
+  class KodDirectoryCache(
+      private val maxEntries: Int = 48,
+      private val ttlMs: Long = 90_000L
+  ) {
+      private data class CacheKey(
+          val accountId: String,
+          val path: String,
+          val sortField: SortField,
+          val sortOrder: SortOrder
+      )
+  
+      private data class CacheEntry(
+          val result: PathListResult,
+          val cachedAtMs: Long
+      )
+  
+      private val map = object : LinkedHashMap<CacheKey, CacheEntry>(maxEntries + 1, 0.75f, true) {
+          override fun removeEldestEntry(eldest: MutableMap.MutableEntry<CacheKey, CacheEntry>?): Boolean {
+              return size > maxEntries
+          }
+      }
+  
+      @Synchronized
+      fun get(
+          accountId: String,
+          path: String,
+          sortField: SortField,
+          sortOrder: SortOrder
+      ): PathListResult? {
+          val key = CacheKey(accountId, path.trim(), sortField, sortOrder)
+          val entry = map[key] ?: return null
+          if (System.currentTimeMillis() - entry.cachedAtMs > ttlMs) {
+              map.remove(key)
+              return null
+          }
+          return entry.result
+      }
+  
+      @Synchronized
+      fun put(
+          accountId: String,
+          path: String,
+          sortField: SortField,
+          sortOrder: SortOrder,
+          result: PathListResult
+      ) {
+          val key = CacheKey(accountId, path.trim(), sortField, sortOrder)
+          map[key] = CacheEntry(result = result, cachedAtMs = System.currentTimeMillis())
+      }
+  
+      @Synchronized
+      fun invalidatePath(accountId: String, path: String) {
+          val norm = path.trim()
+          val iterator = map.entries.iterator()
+          while (iterator.hasNext()) {
+              val k = iterator.next().key
+              if (k.accountId == accountId && (k.path == norm || k.path.startsWith("{userRencent") || k.path.startsWith("{userFav"))) {
+                  iterator.remove()
+              }
+          }
+      }
+  
+      @Synchronized
+      fun invalidateAccount(accountId: String) {
+          val iterator = map.entries.iterator()
+          while (iterator.hasNext()) {
+              if (iterator.next().key.accountId == accountId) {
+                  iterator.remove()
+              }
+          }
+      }
+  
+      @Synchronized
+      fun clearAll() {
+          map.clear()
+      }
+  }
+  
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodSyncEngine.kt, endLine=120, startLine=1)
+Response:
+  package com.example.data
+  
+  import android.content.Context
+  import android.net.Uri
+  import androidx.documentfile.provider.DocumentFile
+  import androidx.work.Constraints
+  import androidx.work.CoroutineWorker
+  import androidx.work.ExistingPeriodicWorkPolicy
+  import androidx.work.NetworkType
+  import androidx.work.PeriodicWorkRequestBuilder
+  import androidx.work.WorkManager
+  import androidx.work.WorkerParameters
+  import androidx.work.workDataOf
+  import com.example.model.KodAccount
+  import com.example.model.SyncDirection
+  import com.example.model.SyncFrequency
+  import com.example.model.SyncRule
+  import com.example.model.SyncRunStatus
+  import kotlinx.coroutines.Dispatchers
+  import kotlinx.coroutines.flow.first
+  import kotlinx.coroutines.withContext
+  import java.util.concurrent.TimeUnit
+  import kotlin.math.abs
+  
+  data class SyncOutcome(
+      val uploadedCount: Int,
+      val downloadedCount: Int,
+      val skippedCount: Int,
+      val summary: String
+  )
+  
+  /**
+   * Bidirectional sync engine reconciling an Android Storage Access Framework (SAF)
+   * local folder with a remote KodBox directory — requires zero broad storage permissions.
+   */
+  class KodSyncEngine(
+      private val context: Context,
+      private val apiClient: KodBoxApiClient
+  ) {
+      suspend fun executeSyncRule(account: KodAccount, rule: SyncRule): Result<SyncOutcome> = withContext(Dispatchers.IO) {
+          runCatching {
+              val treeUri = Uri.parse(rule.localTreeUri)
+              val localDir = DocumentFile.fromTreeUri(context, treeUri)
+                  ?: error("无法访问本地同步目录，请重新授权文件夹")
+              if (!localDir.exists() || !localDir.isDirectory) {
+                  error("本地同步文件夹已不存在或权限已失效")
+              }
+  
+              // 1. Fetch remote KodBox directory listing
+              val remoteListing = apiClient.listPath(account, rule.remotePath).getOrElse { err ->
+                  error("读取 KodBox 目标文件夹失败：${err.message}")
+              }
+              val remoteFilesByName = remoteListing.items
+                  .filterNot { it.isFolder }
+                  .associateBy { it.name }
+  
+              // 2. Scan local SAF directory files
+              val localFilesByName = localDir.listFiles()
+                  .filter { it.isFile && !it.name.isNullOrBlank() }
+                  .associateBy { it.name!! }
+  
+              val allNames = (remoteFilesByName.keys + localFilesByName.keys).sorted()
+              var uploaded = 0
+              var downloaded = 0
+              var skipped = 0
+              val toleranceMs = 5_000L
+  
+              for (fileName in allNames) {
+                  val localFile = localFilesByName[fileName]
+                  val remoteFile = remoteFilesByName[fileName]
+  
+                  when {
+                      // Only exists locally -> Upload
+                      localFile != null && remoteFile == null -> {
+                          if (rule.direction == SyncDirection.TWO_WAY || rule.direction == SyncDirection.UPLOAD_ONLY) {
+                              uploadLocalDocument(account, rule.remotePath, localFile)
+                              uploaded++
+                          } else {
+                              skipped++
+                          }
+                      }
+  
+                      // Only exists remotely -> Download
+                      localFile == null && remoteFile != null -> {
+                          if (rule.direction == SyncDirection.TWO_WAY || rule.direction == SyncDirection.DOWNLOAD_ONLY) {
+                              downloadToLocalDocument(account, remoteFile, localDir)
+                              downloaded++
+                          } else {
+                              skipped++
+                          }
+                      }
+  
+                      // Exists on both sides -> Compare modification timestamp & size (newer wins)
+                      localFile != null && remoteFile != null -> {
+                          val localModMs = localFile.lastModified()
+                          val remoteModMs = if (remoteFile.modifyTime < 10_000_000_000L) {
+                              remoteFile.modifyTime * 1000L
+                          } else {
+                              remoteFile.modifyTime
+                          }
+                          val sameSize = localFile.length() == remoteFile.size
+                          val withinTolerance = abs(localModMs - remoteModMs) <= toleranceMs
+  
+                          if (sameSize && withinTolerance) {
+                              skipped++
+                          } else if (localModMs > remoteModMs + toleranceMs &&
+                              (rule.direction == SyncDirection.TWO_WAY || rule.direction == SyncDirection.UPLOAD_ONLY)
+                          ) {
+                              uploadLocalDocument(account, rule.remotePath, localFile)
+                              uploaded++
+                          } else if (remoteModMs > localModMs + toleranceMs &&
+                              (rule.direction == SyncDirection.TWO_WAY || rule.direction == SyncDirection.DOWNLOAD_ONLY)
+                          ) {
+                              downloadToLocalDocument(account, remoteFile, localDir, overwriteExisting = localFile)
+                              downloaded++
+                          } else {
+                              skipped++
+                          }
+                      }
+                  }
+Call: view_file_outline(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/viewmodel/KodViewModel.kt, itemOffset=0)
+Response:
+  Total lines: 1874
+  Total outline items: 131
+  
+  Outline items (offset 0):
+  - KodViewModel (Lines 65-1873)
+  - KodViewModel > constructor KodViewModel(Application) (Lines 65-65)
+  - KodViewModel > apiClient: KodBoxApiClient (Lines 67-67)
+  - KodViewModel > adminAccountClient: KodAdminAndAccountClient (Lines 68-68)
+  - KodViewModel > directoryCache: KodDirectoryCache (Lines 69-69)
+  - KodViewModel > accountStore: KodAccountStore (Lines 70-70)
+  - KodViewModel > syncEngine: KodSyncEngine (Lines 71-71)
+  - KodViewModel > _uiState: MutableStateFlow<KodUiState> (Lines 73-73)
+  - KodViewModel > uiState: StateFlow<KodUiState> (Lines 74-74)
+  - KodViewModel > _events: MutableSharedFlow<KodUiEvent> (Lines 76-76)
+  - KodViewModel > events: SharedFlow<KodUiEvent> (Lines 77-77)
+  - KodViewModel > activeAccountImageLoader: ImageLoader? (Lines 79-79)
+  - KodViewModel > activeLoaderKey: String? (Lines 80-80)
+  - KodViewModel > transferJobs: MutableMap<String, Job> (Lines 81-81)
+  - KodViewModel > realtimeWatcherJob: Job? (Lines 82-82)
+  - KodViewModel > <class initializer> (Lines 84-87)
+  - KodViewModel > getAuthenticatedImageLoader(): ImageLoader (Lines 89-97)
+  - KodViewModel > observeStore(): Unit (Lines 99-135)
+  - KodViewModel > loadServerPlugins(KodAccount): Unit (Lines 137-148)
+  - KodViewModel > startRealtimeSyncWatcher(): Unit (Lines 150-165)
+  - KodViewModel > updateLoginForm((LoginFormState) -> LoginFormState): Unit (Lines 169-171)
+  - KodViewModel > probeServerConnection(): Unit (Lines 173-208)
+  - KodViewModel > refreshCaptcha(): Unit (Lines 210-217)
+  - KodViewModel > submitLogin(): Unit (Lines 219-255)
+  - KodViewModel > openAddAccountLogin(): Unit (Lines 257-265)
+  - KodViewModel > cancelAddAccountLogin(): Unit (Lines 267-271)
+  - KodViewModel > switchAccount(KodAccount): Unit (Lines 273-286)
+  - KodViewModel > logoutAccount(KodAccount): Unit (Lines 288-302)
+  - KodViewModel > refreshAccountQuota(KodAccount?): Unit (Lines 304-324)
+  - KodViewModel > selectTab(MainTab): Unit (Lines 330-346)
+  - KodViewModel > selectSyncSubTab(SyncSubTab): Unit (Lines 348-350)
+  - KodViewModel > enterSpace(KodSpace, KodAccount?): Unit (Lines 352-376)
+  - KodViewModel > selectFileTypeCategory(KodFileTypeCategory): Unit (Lines 378-396)
+  - KodViewModel > selectTagFilter(KodTag?): Unit (Lines 398-420)
+  - KodViewModel > openFolder(KodFileItem): Unit (Lines 422-436)
+  - KodViewModel > navigateToBreadcrumb(Int): Unit (Lines 438-453)
+  - KodViewModel > navigateUp(): Boolean (Lines 455-460)
+  - KodViewModel > refreshCurrentDirectory(): Unit (Lines 462-467)
+  - KodViewModel > loadDirectory(KodAccount, String, List<BreadcrumbNode>?, Boolean): Unit (Lines 469-546)
+  - KodViewModel > applyClientFiltersAndSort(List<KodFileItem>, AppPreferences, String, SearchFilterState): List<KodFileItem> (Lines 548-605)
+  - KodViewModel > toggleSearch(Boolean): Unit (Lines 611-621)
+  - KodViewModel > updateSearchQuery(String): Unit (Lines 623-630)
+  - KodViewModel > toggleFilterSheet(Boolean): Unit (Lines 632-634)
+  - KodViewModel > updateSearchFilter((SearchFilterState) -> SearchFilterState): Unit (Lines 636-644)
+  - KodViewModel > clearSearchFilters(): Unit (Lines 646-654)
+  - KodViewModel > executeSearch(): Unit (Lines 656-686)
+  - KodViewModel > toggleViewMode(): Unit (Lines 688-694)
+  - KodViewModel > updateSort(SortField, SortOrder): Unit (Lines 696-706)
+  - KodViewModel > updatePreferences((AppPreferences) -> AppPreferences): Unit (Lines 708-713)
+  - KodViewModel > setThemePreference(ThemePreference): Unit (Lines 715-719)
+  - KodViewModel > toggleItemSelection(KodFileItem): Unit (Lines 721-727)
+  - KodViewModel > selectAllItems(): Unit (Lines 729-733)
+  - KodViewModel > clearSelection(): Unit (Lines 735-737)
+  - KodViewModel > showActionSheet(KodFileItem?): Unit (Lines 743-745)
+  - KodViewModel > showDetailDialog(KodFileItem?): Unit (Lines 747-749)
+  - KodViewModel > showRenameDialog(KodFileItem?): Unit (Lines 751-753)
+  - KodViewModel > showShareDialog(KodFileItem?): Unit (Lines 755-757)
+  - KodViewModel > showTagSheet(KodFileItem?): Unit (Lines 759-764)
+  - KodViewModel > createFolder(String): Unit (Lines 766-772)
+  - KodViewModel > createTextFile(String, String): Unit (Lines 774-780)
+  - KodViewModel > renameItem(KodFileItem, String): Unit (Lines 782-788)
+  - KodViewModel > deleteItems(List<KodFileItem>, Boolean): Unit (Lines 790-797)
+  - KodViewModel > restoreRecycleItems(List<KodFileItem>): Unit (Lines 799-805)
+  - KodViewModel > clearRecycleBin(): Unit (Lines 807-812)
+  - KodViewModel > toggleFavorite(KodFileItem): Unit (Lines 814-821)
+  - KodViewModel > zipItems(List<KodFileItem>): Unit (Lines 823-829)
+  - KodViewModel > unzipItem(KodFileItem): Unit (Lines 831-837)
+  - KodViewModel > submitOfflineDownload(String): Unit (Lines 839-845)
+  - KodViewModel > startCopyOrMove(List<KodFileItem>, Boolean): Unit (Lines 847-867)
+  - KodViewModel > browseFolderPickerInto(KodFileItem): Unit (Lines 869-884)
+  - KodViewModel > switchFolderPickerSpace(Boolean): Unit (Lines 886-902)
+  - KodViewModel > navigateFolderPickerUp(): Unit (Lines 904-921)
+  - KodViewModel > dismissFolderPicker(): Unit (Lines 923-925)
+  - KodViewModel > openRemoteSyncFolderPicker(): Unit (Lines 927-946)
+  - KodViewModel > clearPickedSyncRemote(): Unit (Lines 948-950)
+  - KodViewModel > confirmCopyOrMove(): Unit (Lines 952-972)
+  - KodViewModel > loadFolderPickerDir(KodAccount, String): Unit (Lines 974-1000)
+  - KodViewModel > loadTags(KodAccount): Unit (Lines 1006-1012)
+  - KodViewModel > createTag(String, String): Unit (Lines 1014-1025)
+  - KodViewModel > toggleTagOnItem(KodFileItem, KodTag): Unit (Lines 1027-1046)
+  - KodViewModel > selectShareSubTab(ShareSubTab): Unit (Lines 1048-1057)
+  - KodViewModel > loadShares(): Unit (Lines 1059-1083)
+  - KodViewModel > openSharedResource(String, String, Boolean, String, Long): Unit (Lines 1085-1118)
+  - KodViewModel > showEditShareDialog(KodShareItem?): Unit (Lines 1120-1122)
+  - KodViewModel > createShareLink(KodFileItem, String, Long, ShareAccessMode): Unit (Lines 1124-1146)
+  - KodViewModel > updateExistingShare(KodShareItem, String, Long, ShareAccessMode): Unit (Lines 1148-1169)
+  - KodViewModel > cancelShare(String): Unit (Lines 1171-1183)
+  - KodViewModel > copyText(String, String): Unit (Lines 1185-1187)
+  - KodViewModel > createSyncRule(String, String, String, String, String, SyncDirection, SyncFrequency, Boolean): Unit (Lines 1193-1224)
+  - KodViewModel > toggleSyncRuleEnabled(SyncRule, Boolean): Unit (Lines 1226-1233)
+  - KodViewModel > updateSyncRuleFrequency(SyncRule, SyncFrequency): Unit (Lines 1235-1242)
+  - KodViewModel > updateSyncRuleDirection(SyncRule, SyncDirection): Unit (Lines 1244-1250)
+  - KodViewModel > deleteSyncRule(SyncRule): Unit (Lines 1252-1258)
+  - KodViewModel > runSyncRuleNow(SyncRule): Unit (Lines 1260-1265)
+  - KodViewModel > runAllSyncRulesNow(): Unit (Lines 1267-1279)
+  - KodViewModel > runSyncRuleInternal(KodAccount, SyncRule, Boolean): Unit (Lines 1281-1316)
+  - KodViewModel > setMediaFilter(String): Unit (Lines 1322-1324)
+  - KodViewModel > loadMediaItems(): Unit (Lines 1326-1352)
+  - KodViewModel > openFilePreview(KodFileItem): Unit (Lines 1358-1400)
+  - KodViewModel > updatePreviewTextContent(String): Unit (Lines 1402-1406)
+  
+  ... and 31 more items.
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodSyncEngine.kt, endLine=248, startLine=121)
+Response:
+              }
+  
+              val summary = "上传 $uploaded · 下载 $downloaded · 一致跳过 $skipped"
+              SyncOutcome(
+                  uploadedCount = uploaded,
+                  downloadedCount = downloaded,
+                  skippedCount = skipped,
+                  summary = summary
+              )
+          }
+      }
+  
+      private suspend fun uploadLocalDocument(account: KodAccount, remoteDir: String, doc: DocumentFile) {
+          val fileName = doc.name ?: return
+          val mime = doc.type ?: KodFormatters.mimeTypeForExtension(fileName.substringAfterLast('.', ""))
+          val size = doc.length()
+          val resolver = context.contentResolver
+          apiClient.uploadFile(
+              account = account,
+              targetDir = remoteDir,
+              fileName = fileName,
+              mimeType = mime,
+              inputStreamProvider = { resolver.openInputStream(doc.uri) },
+              totalBytes = size,
+              onProgress = { _, _ -> }
+          ).getOrThrow()
+      }
+  
+      private suspend fun downloadToLocalDocument(
+          account: KodAccount,
+          remoteItem: com.example.model.KodFileItem,
+          parentLocalDir: DocumentFile,
+          overwriteExisting: DocumentFile? = null
+      ) {
+          val mime = KodFormatters.mimeTypeForExtension(remoteItem.normalizedExt)
+          val targetDoc = overwriteExisting
+              ?: parentLocalDir.createFile(mime, remoteItem.name)
+              ?: error("无法在本地目录创建文件 ${remoteItem.name}")
+          val resolver = context.contentResolver
+          apiClient.downloadFileToStream(
+              account = account,
+              item = remoteItem,
+              outputStreamProvider = { resolver.openOutputStream(targetDoc.uri, "wt") }
+          ).getOrThrow()
+      }
+  
+      companion object {
+          private const val WORK_PREFIX = "kodnext_sync_"
+  
+          fun scheduleRule(context: Context, rule: SyncRule) {
+              val workManager = WorkManager.getInstance(context)
+              val workName = "$WORK_PREFIX${rule.id}"
+              if (!rule.enabled || rule.frequency == SyncFrequency.MANUAL || rule.frequency.intervalMinutes <= 0L) {
+                  workManager.cancelUniqueWork(workName)
+                  return
+              }
+              val constraints = Constraints.Builder()
+                  .setRequiredNetworkType(if (rule.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
+                  .build()
+              val request = PeriodicWorkRequestBuilder<KodSyncWorker>(
+                  rule.frequency.intervalMinutes.coerceAtLeast(15L),
+                  TimeUnit.MINUTES
+              )
+                  .setConstraints(constraints)
+                  .setInputData(workDataOf(KodSyncWorker.KEY_RULE_ID to rule.id))
+                  .build()
+  
+              workManager.enqueueUniquePeriodicWork(
+                  workName,
+                  ExistingPeriodicWorkPolicy.UPDATE,
+                  request
+              )
+          }
+  
+          fun cancelRule(context: Context, ruleId: String) {
+              WorkManager.getInstance(context).cancelUniqueWork("$WORK_PREFIX$ruleId")
+          }
+      }
+  }
+  
+  class KodSyncWorker(
+      appContext: Context,
+      params: WorkerParameters
+  ) : CoroutineWorker(appContext, params) {
+  
+      override suspend fun doWork(): Result {
+          val ruleId = inputData.getString(KEY_RULE_ID) ?: return Result.failure()
+          val store = KodAccountStore(applicationContext)
+          val rules = store.syncRulesFlow.first()
+          val rule = rules.find { it.id == ruleId } ?: return Result.success()
+          if (!rule.enabled) return Result.success()
+  
+          val accounts = store.accountsFlow.first()
+          val account = accounts.find { it.id == rule.accountId } ?: return Result.success()
+  
+          val apiClient = KodBoxApiClient()
+          val engine = KodSyncEngine(applicationContext, apiClient)
+          val outcome = engine.executeSyncRule(account, rule)
+  
+          return outcome.fold(
+              onSuccess = { res ->
+                  store.saveOrUpdateSyncRule(
+                      rule.copy(
+                          lastSyncTime = System.currentTimeMillis(),
+                          lastStatus = SyncRunStatus.SUCCESS,
+                          lastSummary = res.summary
+                      )
+                  )
+                  Result.success()
+              },
+              onFailure = { err ->
+                  store.saveOrUpdateSyncRule(
+                      rule.copy(
+                          lastSyncTime = System.currentTimeMillis(),
+                          lastStatus = SyncRunStatus.ERROR,
+                          lastSummary = err.message ?: "后台同步失败"
+                      )
+                  )
+                  Result.retry()
+              }
+          )
+      }
+  
+      companion object {
+          const val KEY_RULE_ID = "rule_id"
+      }
+  }
+  
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodSessionCookieJar.kt)
+Response:
+  package com.example.data
+  
+  import okhttp3.Cookie
+  import okhttp3.CookieJar
+  import okhttp3.HttpUrl
+  import java.util.concurrent.ConcurrentHashMap
+  
+  /**
+   * Thread-safe per-host CookieJar that captures KodBox PHP session cookies
+   * (PHPSESSID, CSRF_TOKEN, kodToken, etc.) and supports persisting/hydrating
+   * session headers across app restarts.
+   */
+  class KodSessionCookieJar : CookieJar {
+  
+      private val store = ConcurrentHashMap<String, ConcurrentHashMap<String, Cookie>>()
+  
+      override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+          val hostMap = store.getOrPut(url.host) { ConcurrentHashMap() }
+          val now = System.currentTimeMillis()
+          cookies.forEach { cookie ->
+              if (cookie.expiresAt < now || cookie.value == "deleted") {
+                  hostMap.remove(cookie.name)
+              } else {
+                  hostMap[cookie.name] = cookie
+              }
+          }
+      }
+  
+      override fun loadForRequest(url: HttpUrl): List<Cookie> {
+          val hostMap = store[url.host] ?: return emptyList()
+          val now = System.currentTimeMillis()
+          val valid = mutableListOf<Cookie>()
+          val iterator = hostMap.entries.iterator()
+          while (iterator.hasNext()) {
+              val entry = iterator.next()
+              if (entry.value.expiresAt < now) {
+                  iterator.remove()
+              } else if (entry.value.matches(url)) {
+                  valid.add(entry.value)
+              }
+          }
+          return valid
+      }
+  
+      fun exportHeaderForHost(host: String): String {
+          val hostMap = store[host] ?: return ""
+          return hostMap.values.joinToString("; ") { "${it.name}=${it.value}" }
+      }
+  
+      fun getCsrfToken(host: String): String {
+          val hostMap = store[host] ?: return ""
+          return hostMap["CSRF_TOKEN"]?.value
+              ?: hostMap["csrf_token"]?.value
+              ?: ""
+      }
+  
+      fun hydrateFromHeader(url: HttpUrl, cookieHeader: String) {
+          if (cookieHeader.isBlank()) return
+          val hostMap = store.getOrPut(url.host) { ConcurrentHashMap() }
+          cookieHeader.split(";").forEach { pair ->
+              val trimmed = pair.trim()
+              val eqIdx = trimmed.indexOf('=')
+              if (eqIdx > 0) {
+                  val name = trimmed.substring(0, eqIdx).trim()
+                  val value = trimmed.substring(eqIdx + 1).trim()
+                  if (name.isNotEmpty()) {
+                      val cookie = Cookie.Builder()
+                          .name(name)
+                          .value(value)
+                          .domain(url.host)
+                          .path("/")
+                          .build()
+                      hostMap[name] = cookie
+                  }
+              }
+          }
+      }
+  
+      fun clearHost(host: String) {
+          store.remove(host)
+      }
+  }
+  
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/viewmodel/KodViewModel.kt, endLine=1874, startLine=1400)
+Response:
+      }
+  
+      fun updatePreviewTextContent(newContent: String) {
+          _uiState.update { state ->
+              state.copy(previewState = state.previewState?.copy(textContent = newContent))
+          }
+      }
+  
+      fun togglePreviewEditMode(editing: Boolean) {
+          _uiState.update { state ->
+              state.copy(previewState = state.previewState?.copy(isEditingText = editing))
+          }
+      }
+  
+      fun savePreviewTextContent() {
+          val account = _uiState.value.activeAccount ?: return
+          val preview = _uiState.value.previewState ?: return
+          viewModelScope.launch {
+              _uiState.update { it.copy(previewState = preview.copy(isSavingText = true)) }
+              apiClient.saveTextFile(account, preview.item, preview.textContent).fold(
+                  onSuccess = {
+                      _uiState.update {
+                          it.copy(previewState = it.previewState?.copy(isSavingText = false, isEditingText = false))
+                      }
+                      emitMessage("已保存到 KodBox 服务器")
+                      refreshCurrentDirectory()
+                  },
+                  onFailure = { err ->
+                      _uiState.update { it.copy(previewState = it.previewState?.copy(isSavingText = false)) }
+                      emitError(err.message ?: "保存失败")
+                  }
+              )
+          }
+      }
+  
+      fun closePreview() {
+          _uiState.update { it.copy(previewState = null) }
+      }
+  
+      // endregion
+  
+      // region Uploads & Downloads (Zero-Permission Android Storage Compliant)
+  
+      fun uploadUris(uris: List<Uri>) {
+          if (uris.isEmpty()) return
+          val account = _uiState.value.activeAccount ?: return
+          val targetDir = _uiState.value.currentPath.ifBlank { account.personalRootPath }
+          val resolver = getApplication<Application>().contentResolver
+  
+          uris.forEach { uri ->
+              val (fileName, fileSize) = queryUriMetadata(uri)
+              val mimeType = resolver.getType(uri) ?: "application/octet-stream"
+              val taskId = UUID.randomUUID().toString()
+              val task = TransferTask(
+                  id = taskId,
+                  fileName = fileName,
+                  remotePath = targetDir,
+                  type = TransferType.UPLOAD,
+                  totalBytes = fileSize
+              )
+              addOrUpdateTransfer(task)
+  
+              val job = viewModelScope.launch {
+                  val result = apiClient.uploadFile(
+                      account = account,
+                      targetDir = targetDir,
+                      fileName = fileName,
+                      mimeType = mimeType,
+                      inputStreamProvider = { resolver.openInputStream(uri) },
+                      totalBytes = fileSize,
+                      onProgress = { written, total ->
+                          val ratio = if (total > 0L) (written.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0.5f
+                          updateTransfer(taskId) {
+                              it.copy(progress = ratio, bytesTransferred = written, totalBytes = total)
+                          }
+                      }
+                  )
+                  result.fold(
+                      onSuccess = {
+                          updateTransfer(taskId) {
+                              it.copy(status = TransferStatus.COMPLETED, progress = 1f, bytesTransferred = it.totalBytes.coerceAtLeast(it.bytesTransferred))
+                          }
+                          emitMessage("上传完成：$fileName")
+                          refreshCurrentDirectory()
+                      },
+                      onFailure = { err ->
+                          updateTransfer(taskId) {
+                              it.copy(status = TransferStatus.FAILED, errorMessage = err.message ?: "上传失败")
+                          }
+                          emitError("上传失败 ($fileName)：${err.message}")
+                      }
+                  )
+              }
+              transferJobs[taskId] = job
+          }
+          emitMessage("已添加 ${uris.size} 个上传任务")
+      }
+  
+      fun downloadItems(items: List<KodFileItem>) {
+          val account = _uiState.value.activeAccount ?: return
+          val filesOnly = items.filterNot { it.isFolder }
+          if (filesOnly.isEmpty()) {
+              emitMessage("请选择具体文件进行下载（文件夹请先压缩后下载）")
+              return
+          }
+          _uiState.update { it.copy(actionSheetItem = null, selectedPaths = emptySet()) }
+          val baseDir = File(getApplication<Application>().filesDir, "downloads")
+  
+          filesOnly.forEach { item ->
+              val destFile = KodFormatters.safeConfinedFile(baseDir, item.name)
+              val taskId = UUID.randomUUID().toString()
+              addOrUpdateTransfer(
+                  TransferTask(
+                      id = taskId,
+                      fileName = item.name,
+                      remotePath = item.path,
+                      localPath = destFile.absolutePath,
+                      type = TransferType.DOWNLOAD,
+                      totalBytes = item.size
+                  )
+              )
+              val job = viewModelScope.launch {
+                  val res = apiClient.downloadFile(
+                      account = account,
+                      item = item,
+                      destinationFile = destFile,
+                      onProgress = { read, total ->
+                          val ratio = if (total > 0L) (read.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0.5f
+                          updateTransfer(taskId) {
+                              it.copy(progress = ratio, bytesTransferred = read, totalBytes = total)
+                          }
+                      }
+                  )
+                  res.fold(
+                      onSuccess = { saved ->
+                          // Also mirror to public Downloads via zero-permission MediaStore on Android 10+
+                          mirrorToPublicDownloadsIfSupported(saved, item.normalizedExt)
+                          updateTransfer(taskId) {
+                              it.copy(
+                                  status = TransferStatus.COMPLETED,
+                                  progress = 1f,
+                                  localPath = saved.absolutePath,
+                                  bytesTransferred = saved.length()
+                              )
+                          }
+                          emitMessage("下载完成：${item.name}")
+                      },
+                      onFailure = { err ->
+                          updateTransfer(taskId) {
+                              it.copy(status = TransferStatus.FAILED, errorMessage = err.message ?: "下载失败")
+                          }
+                          emitError("下载失败 (${item.name})：${err.message}")
+                      }
+                  )
+              }
+              transferJobs[taskId] = job
+          }
+          emitMessage("已开始下载 ${filesOnly.size} 个文件")
+      }
+  
+      fun openDownloadedTransfer(task: TransferTask) {
+          if (task.localPath.isBlank()) return
+          val file = File(task.localPath)
+          if (!file.exists()) {
+              emitError("本地文件不存在，请重新下载")
+              return
+          }
+          val ext = file.extension
+          _events.tryEmit(KodUiEvent.OpenLocalFile(file, KodFormatters.mimeTypeForExtension(ext)))
+      }
+  
+      fun cancelTransfer(taskId: String) {
+          transferJobs.remove(taskId)?.cancel()
+          updateTransfer(taskId) { it.copy(status = TransferStatus.CANCELLED) }
+      }
+  
+      fun clearFinishedTransfers() {
+          _uiState.update { state ->
+              state.copy(transfers = state.transfers.filter { it.status == TransferStatus.RUNNING })
+          }
+      }
+  
+      // endregion
+  
+      // region Settings
+  
+      fun openSettings(show: Boolean) {
+          _uiState.update { it.copy(showSettings = show) }
+          if (show) {
+              refreshCacheSize()
+          }
+      }
+  
+      fun refreshCacheSize() {
+          viewModelScope.launch(Dispatchers.IO) {
+              val bytes = calculateDirSize(getApplication<Application>().cacheDir)
+              _uiState.update { it.copy(cacheSizeBytes = bytes) }
+          }
+      }
+  
+      fun clearImageCache() {
+          viewModelScope.launch(Dispatchers.IO) {
+              runCatching {
+                  getAuthenticatedImageLoader().memoryCache?.clear()
+                  File(getApplication<Application>().cacheDir, "image_cache").deleteRecursively()
+                  getApplication<Application>().cacheDir.listFiles()?.forEach { child ->
+                      if (child.name.contains("cache", ignoreCase = true) || child.name.contains("coil", ignoreCase = true)) {
+                          child.deleteRecursively()
+                      }
+                  }
+              }
+              val remaining = calculateDirSize(getApplication<Application>().cacheDir)
+              _uiState.update { it.copy(cacheSizeBytes = remaining) }
+              emitMessage("本地缓存已清理")
+          }
+      }
+  
+      private fun calculateDirSize(dir: File?): Long {
+          if (dir == null || !dir.exists()) return 0L
+          if (dir.isFile) return dir.length()
+          return dir.listFiles()?.sumOf { calculateDirSize(it) } ?: 0L
+      }
+  
+      // region Workspace Apps (Project / IM / AI / Plugins), Account Center & Admin Console
+  
+      fun toggleAppHubSheet(show: Boolean) {
+          _uiState.update { it.copy(showAppHubSheet = show) }
+      }
+  
+      fun openWorkspaceApp(app: KodWorkspaceApp) {
+          _uiState.update { it.copy(activeWorkspaceApp = app, showAppHubSheet = false) }
+      }
+  
+      fun closeWorkspaceApp() {
+          _uiState.update { it.copy(activeWorkspaceApp = null) }
+      }
+  
+      fun pinTopLeftApp(appId: String) {
+          updatePreferences { it.copy(pinnedAppId = appId) }
+          emitMessage("已置顶到左上角快捷入口")
+      }
+  
+      fun openWebAdminPortal() {
+          val account = _uiState.value.activeAccount ?: return
+          if (!account.isAdmin) {
+              emitError("仅系统管理员可访问后台管理")
+              return
+          }
+          openWorkspaceApp(
+              KodWorkspaceApp(
+                  id = "admin",
+                  title = "KodBox 网页后台管理",
+                  description = "完整网页端系统管理控制台",
+                  launchUrl = "${account.serverUrl.trimEnd('/')}/#admin",
+                  isRouterPage = true,
+                  isAdminOnly = true
+              )
+          )
+      }
+  
+      fun openAccountCenter(open: Boolean) {
+          _uiState.update { it.copy(showAccountCenter = open) }
+          if (open) {
+              loadAccountCenterData()
+          }
+      }
+  
+      fun loadAccountCenterData() {
+          val account = _uiState.value.activeAccount ?: return
+          viewModelScope.launch {
+              _uiState.update { it.copy(isLoadingAccountCenter = true) }
+              val (devicesRes, logsRes) = coroutineScope {
+                  val devicesJob = async { adminAccountClient.fetchUserDevices(account) }
+                  val logsJob = async { adminAccountClient.fetchUserLogs(account) }
+                  devicesJob.await() to logsJob.await()
+              }
+              _uiState.update { state ->
+                  state.copy(
+                      isLoadingAccountCenter = false,
+                      userDevices = devicesRes.getOrElse { state.userDevices },
+                      userLogs = logsRes.getOrElse { state.userLogs }
+                  )
+              }
+          }
+      }
+  
+      fun updateAccountProfile(nickName: String, email: String, phone: String, sex: String) {
+          val account = _uiState.value.activeAccount ?: return
+          viewModelScope.launch {
+              _uiState.update { it.copy(isWorking = true) }
+              val updates = buildList {
+                  if (nickName.trim() != account.nickName) add("nickName" to nickName.trim())
+                  if (email.trim() != account.email) add("email" to email.trim())
+                  if (phone.trim() != account.phone) add("phone" to phone.trim())
+                  if (sex != account.sex) add("sex" to sex)
+              }
+              if (updates.isEmpty()) {
+                  _uiState.update { it.copy(isWorking = false) }
+                  emitMessage("个人资料未发生变化")
+                  return@launch
+              }
+              var firstError: String? = null
+              for ((k, v) in updates) {
+                  val res = adminAccountClient.updateUserProfileField(account, k, v)
+                  if (res.isFailure) {
+                      firstError = res.exceptionOrNull()?.message ?: "更新 $k 失败"
+                      break
+                  }
+              }
+              _uiState.update { it.copy(isWorking = false) }
+              if (firstError != null) {
+                  emitError(firstError)
+              } else {
+                  val updated = account.copy(
+                      nickName = nickName.trim().ifBlank { account.nickName },
+                      email = email.trim(),
+                      phone = phone.trim(),
+                      sex = sex
+                  )
+                  accountStore.saveOrUpdateAccount(updated, makeActive = true)
+                  emitMessage("个人资料已同步到 KodBox")
+              }
+          }
+      }
+  
+      fun changeAccountPassword(oldPassword: String, newPassword: String) {
+          val account = _uiState.value.activeAccount ?: return
+          if (oldPassword.isBlank() || newPassword.length < 6) {
+              emitError("请输入原密码，且新密码不少于 6 位")
+              return
+          }
+          viewModelScope.launch {
+              _uiState.update { it.copy(isWorking = true) }
+              adminAccountClient.changePassword(account, oldPassword, newPassword).fold(
+                  onSuccess = {
+                      _uiState.update { it.copy(isWorking = false) }
+                      emitMessage("登录密码已修改")
+                  },
+                  onFailure = { err ->
+                      _uiState.update { it.copy(isWorking = false) }
+                      emitError(err.message ?: "修改密码失败")
+                  }
+              )
+          }
+      }
+  
+      fun openAdminConsole(open: Boolean) {
+          val account = _uiState.value.activeAccount
+          if (open && account?.isAdmin != true) {
+              emitError("当前账号不是系统管理员")
+              return
+          }
+          _uiState.update { it.copy(showAdminConsole = open) }
+          if (open) {
+              loadAdminOverview()
+          }
+      }
+  
+      fun loadAdminOverview() {
+          val account = _uiState.value.activeAccount ?: return
+          viewModelScope.launch {
+              _uiState.update { it.copy(isLoadingAdmin = true, adminError = null) }
+              adminAccountClient.fetchAdminOverview(account).fold(
+                  onSuccess = { overview ->
+                      _uiState.update {
+                          it.copy(
+                              isLoadingAdmin = false,
+                              adminOverview = overview,
+                              adminError = null
+                          )
+                      }
+                  },
+                  onFailure = { err ->
+                      _uiState.update {
+                          it.copy(
+                              isLoadingAdmin = false,
+                              adminError = err.message ?: "加载后台管理数据失败"
+                          )
+                      }
+                  }
+              )
+          }
+      }
+  
+      fun toggleAdminPluginStatus(pluginId: String, enable: Boolean) {
+          val account = _uiState.value.activeAccount ?: return
+          viewModelScope.launch {
+              _uiState.update { it.copy(isWorking = true) }
+              adminAccountClient.toggleAdminPlugin(account, pluginId, enable).fold(
+                  onSuccess = {
+                      _uiState.update { it.copy(isWorking = false) }
+                      emitMessage(if (enable) "已启用插件 $pluginId" else "已停用插件 $pluginId")
+                      loadAdminOverview()
+                      loadServerPlugins(account)
+                  },
+                  onFailure = { err ->
+                      _uiState.update { it.copy(isWorking = false) }
+                      emitError(err.message ?: "切换插件状态失败")
+                  }
+              )
+          }
+      }
+  
+      // endregion
+  
+      private fun runFileAction(successMsg: String, block: suspend () -> Result<Unit>) {
+          viewModelScope.launch {
+              _uiState.update { it.copy(isWorking = true) }
+              block().fold(
+                  onSuccess = {
+                      _uiState.update { it.copy(isWorking = false) }
+                      emitMessage(successMsg)
+                      _uiState.value.activeAccount?.let { directoryCache.invalidateAccount(it.id) }
+                      refreshCurrentDirectory()
+                  },
+                  onFailure = { err ->
+                      _uiState.update { it.copy(isWorking = false) }
+                      emitError(err.message ?: "操作失败")
+                  }
+              )
+          }
+      }
+  
+      private fun addOrUpdateTransfer(task: TransferTask) {
+          _uiState.update { state ->
+              state.copy(transfers = listOf(task) + state.transfers.filterNot { it.id == task.id })
+          }
+      }
+  
+      private fun updateTransfer(taskId: String, transform: (TransferTask) -> TransferTask) {
+          _uiState.update { state ->
+              state.copy(transfers = state.transfers.map { if (it.id == taskId) transform(it) else it })
+          }
+      }
+  
+      private fun queryUriMetadata(uri: Uri): Pair<String, Long> {
+          var name = "upload_${System.currentTimeMillis()}"
+          var size = -1L
+          val resolver = getApplication<Application>().contentResolver
+          resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+              if (cursor.moveToFirst()) {
+                  val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                  val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                  if (nameIdx >= 0) name = cursor.getString(nameIdx).orEmpty().ifBlank { name }
+                  if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) size = cursor.getLong(sizeIdx)
+              }
+          }
+          return name to size
+      }
+  
+      private suspend fun mirrorToPublicDownloadsIfSupported(sourceFile: File, ext: String) = withContext(Dispatchers.IO) {
+          if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@withContext
+          runCatching {
+              val resolver = getApplication<Application>().contentResolver
+              val values = ContentValues().apply {
+                  put(MediaStore.Downloads.DISPLAY_NAME, sourceFile.name)
+                  put(MediaStore.Downloads.MIME_TYPE, KodFormatters.mimeTypeForExtension(ext))
+                  put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/KodNext")
+              }
+              val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return@runCatching
+              resolver.openOutputStream(uri)?.use { out ->
+                  sourceFile.inputStream().use { input -> input.copyTo(out) }
+              }
+          }
+      }
+  
+      private fun emitMessage(message: String) {
+          _events.tryEmit(KodUiEvent.ShowMessage(message, isError = false))
+      }
+  
+      private fun emitError(message: String) {
+          _events.tryEmit(KodUiEvent.ShowMessage(message, isError = true))
+      }
+  }
+  
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodAccountStore.kt, endLine=278, startLine=121)
+Response:
+              prefs[Keys.PINNED_APP_ID] = updated.pinnedAppId
+          }
+      }
+  
+      private fun encodeAccounts(accounts: List<KodAccount>): String {
+          val array = JSONArray()
+          accounts.forEach { acc ->
+              array.put(
+                  JSONObject().apply {
+                      put("id", acc.id)
+                      put("serverUrl", acc.serverUrl)
+                      put("username", acc.username)
+                      put("nickName", acc.nickName)
+                      put("avatarUrl", acc.avatarUrl)
+                      put("email", acc.email)
+                      put("phone", acc.phone)
+                      put("sex", acc.sex)
+                      put("roleId", acc.roleId)
+                      put("isAdmin", acc.isAdmin)
+                      put("departments", JSONArray(acc.departments))
+                      put("accessToken", acc.accessToken)
+                      put("cookiesHeader", acc.cookiesHeader)
+                      put("csrfToken", acc.csrfToken)
+                      put("userId", acc.userId)
+                      put("sizeUse", acc.sizeUse)
+                      put("sizeMax", acc.sizeMax)
+                      put("serverVersion", acc.serverVersion)
+                      put("siteName", acc.siteName)
+                      put("personalRootPath", acc.personalRootPath)
+                      put("groupRootPath", acc.groupRootPath)
+                      put("lastLoginAt", acc.lastLoginAt)
+                  }
+              )
+          }
+          return array.toString()
+      }
+  
+      private fun decodeAccounts(raw: String): List<KodAccount> {
+          if (raw.isBlank()) return emptyList()
+          return runCatching {
+              val array = JSONArray(raw)
+              buildList {
+                  for (i in 0 until array.length()) {
+                      val obj = array.optJSONObject(i) ?: continue
+                      val deptArr = obj.optJSONArray("departments")
+                      val depts = buildList {
+                          if (deptArr != null) {
+                              for (j in 0 until deptArr.length()) {
+                                  val d = deptArr.optString(j)
+                                  if (d.isNotBlank()) add(d)
+                              }
+                          }
+                      }
+                      add(
+                          KodAccount(
+                              id = obj.optString("id"),
+                              serverUrl = obj.optString("serverUrl"),
+                              username = obj.optString("username"),
+                              nickName = obj.optString("nickName"),
+                              avatarUrl = obj.optString("avatarUrl"),
+                              email = obj.optString("email"),
+                              phone = obj.optString("phone"),
+                              sex = obj.optString("sex", "1"),
+                              roleId = obj.optString("roleId"),
+                              isAdmin = obj.optBoolean("isAdmin", false),
+                              departments = depts,
+                              accessToken = obj.optString("accessToken"),
+                              cookiesHeader = obj.optString("cookiesHeader"),
+                              csrfToken = obj.optString("csrfToken"),
+                              userId = obj.optString("userId"),
+                              sizeUse = obj.optLong("sizeUse", 0L),
+                              sizeMax = obj.optLong("sizeMax", 0L),
+                              serverVersion = obj.optString("serverVersion"),
+                              siteName = obj.optString("siteName", "KodBox"),
+                              personalRootPath = obj.optString("personalRootPath", "{source:1}/"),
+                              groupRootPath = obj.optString("groupRootPath", "{block:enterprise}/").let {
+                                  if (it == "{block:files}/" || it.isBlank()) "{block:enterprise}/" else it
+                              },
+                              lastLoginAt = obj.optLong("lastLoginAt", 0L)
+                          )
+                      )
+                  }
+              }
+          }.getOrDefault(emptyList())
+      }
+  
+      suspend fun saveOrUpdateSyncRule(rule: SyncRule) {
+          context.kodDataStore.edit { prefs ->
+              val current = decodeSyncRules(prefs[Keys.SYNC_RULES_JSON].orEmpty()).toMutableList()
+              val idx = current.indexOfFirst { it.id == rule.id }
+              if (idx >= 0) current[idx] = rule else current.add(0, rule)
+              prefs[Keys.SYNC_RULES_JSON] = encodeSyncRules(current)
+          }
+      }
+  
+      suspend fun removeSyncRule(ruleId: String) {
+          context.kodDataStore.edit { prefs ->
+              val current = decodeSyncRules(prefs[Keys.SYNC_RULES_JSON].orEmpty()).filterNot { it.id == ruleId }
+              prefs[Keys.SYNC_RULES_JSON] = encodeSyncRules(current)
+          }
+      }
+  
+      private fun encodeSyncRules(rules: List<SyncRule>): String {
+          val arr = JSONArray()
+          rules.forEach { rule ->
+              arr.put(
+                  JSONObject().apply {
+                      put("id", rule.id)
+                      put("accountId", rule.accountId)
+                      put("name", rule.name)
+                      put("localTreeUri", rule.localTreeUri)
+                      put("localFolderLabel", rule.localFolderLabel)
+                      put("remotePath", rule.remotePath)
+                      put("remoteFolderLabel", rule.remoteFolderLabel)
+                      put("direction", rule.direction.name)
+                      put("frequency", rule.frequency.name)
+                      put("wifiOnly", rule.wifiOnly)
+                      put("enabled", rule.enabled)
+                      put("lastSyncTime", rule.lastSyncTime)
+                      put("lastStatus", rule.lastStatus.name)
+                      put("lastSummary", rule.lastSummary)
+                  }
+              )
+          }
+          return arr.toString()
+      }
+  
+      private fun decodeSyncRules(raw: String): List<SyncRule> {
+          if (raw.isBlank()) return emptyList()
+          return runCatching {
+              val arr = JSONArray(raw)
+              buildList {
+                  for (i in 0 until arr.length()) {
+                      val obj = arr.optJSONObject(i) ?: continue
+                      add(
+                          SyncRule(
+                              id = obj.optString("id"),
+                              accountId = obj.optString("accountId"),
+                              name = obj.optString("name"),
+                              localTreeUri = obj.optString("localTreeUri"),
+                              localFolderLabel = obj.optString("localFolderLabel"),
+                              remotePath = obj.optString("remotePath"),
+                              remoteFolderLabel = obj.optString("remoteFolderLabel"),
+                              direction = runCatching { SyncDirection.valueOf(obj.optString("direction")) }.getOrDefault(SyncDirection.TWO_WAY),
+                              frequency = runCatching { SyncFrequency.valueOf(obj.optString("frequency")) }.getOrDefault(SyncFrequency.HOURLY),
+                              wifiOnly = obj.optBoolean("wifiOnly", true),
+                              enabled = obj.optBoolean("enabled", true),
+                              lastSyncTime = obj.optLong("lastSyncTime", 0L),
+                              lastStatus = runCatching { SyncRunStatus.valueOf(obj.optString("lastStatus")) }.getOrDefault(SyncRunStatus.IDLE),
+                              lastSummary = obj.optString("lastSummary", "尚未执行过同步")
+                          )
+                      )
+                  }
+              }
+          }.getOrDefault(emptyList())
+      }
+  }
+  
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/viewmodel/KodViewModel.kt, endLine=175, startLine=60)
+Response:
+  import kotlinx.coroutines.launch
+  import kotlinx.coroutines.withContext
+  import java.io.File
+  import java.util.UUID
+  
+  class KodViewModel(application: Application) : AndroidViewModel(application) {
+  
+      val apiClient = KodBoxApiClient()
+      private val adminAccountClient = KodAdminAndAccountClient(apiClient)
+      private val directoryCache = KodDirectoryCache()
+      private val accountStore = KodAccountStore(application.applicationContext)
+      private val syncEngine = KodSyncEngine(application.applicationContext, apiClient)
+  
+      private val _uiState = MutableStateFlow(KodUiState())
+      val uiState: StateFlow<KodUiState> = _uiState.asStateFlow()
+  
+      private val _events = MutableSharedFlow<KodUiEvent>(extraBufferCapacity = 16)
+      val events: SharedFlow<KodUiEvent> = _events.asSharedFlow()
+  
+      private var activeAccountImageLoader: ImageLoader? = null
+      private var activeLoaderKey: String? = null
+      private val transferJobs = mutableMapOf<String, Job>()
+      private var realtimeWatcherJob: Job? = null
+  
+      init {
+          observeStore()
+          startRealtimeSyncWatcher()
+      }
+  
+      fun getAuthenticatedImageLoader(): ImageLoader {
+          val acc = _uiState.value.activeAccount
+          val key = "${acc?.id}|${acc?.cookiesHeader?.hashCode()}|${acc?.avatarUrl}"
+          if (activeAccountImageLoader == null || activeLoaderKey != key) {
+              activeLoaderKey = key
+              activeAccountImageLoader = apiClient.createAuthenticatedImageLoader(getApplication(), acc)
+          }
+          return activeAccountImageLoader!!
+      }
+  
+      private fun observeStore() {
+          viewModelScope.launch {
+              combine(
+                  accountStore.accountsFlow,
+                  accountStore.activeAccountIdFlow,
+                  accountStore.preferencesFlow,
+                  accountStore.syncRulesFlow
+              ) { accounts, activeId, prefs, allRules ->
+                  val resolvedActive = accounts.find { it.id == activeId } ?: accounts.firstOrNull()
+                  val scopedRules = if (resolvedActive != null) {
+                      allRules.filter { it.accountId == resolvedActive.id }
+                  } else {
+                      emptyList()
+                  }
+                  Pair(Triple(accounts, resolvedActive, prefs), scopedRules)
+              }.collect { (triple, scopedRules) ->
+                  val (accounts, resolvedActive, prefs) = triple
+                  val previousAccountId = _uiState.value.activeAccount?.id
+                  _uiState.update { state ->
+                      state.copy(
+                          isHydrated = true,
+                          accounts = accounts,
+                          activeAccount = resolvedActive,
+                          preferences = prefs,
+                          syncRules = scopedRules
+                      )
+                  }
+                  if (resolvedActive != null && resolvedActive.id != previousAccountId) {
+                      apiClient.hydrateAccountSession(resolvedActive)
+                      enterSpace(KodSpace.PERSONAL, forceAccount = resolvedActive)
+                      loadTags(resolvedActive)
+                      loadServerPlugins(resolvedActive)
+                      refreshAccountQuota(resolvedActive)
+                  }
+              }
+          }
+      }
+  
+      private fun loadServerPlugins(account: KodAccount) {
+          viewModelScope.launch {
+              apiClient.fetchServerPluginsDiscovery(account).onSuccess { discovery ->
+                  _uiState.update {
+                      it.copy(
+                          serverPlugins = discovery.viewerPlugins,
+                          workspaceApps = discovery.workspaceApps
+                      )
+                  }
+              }
+          }
+      }
+  
+      private fun startRealtimeSyncWatcher() {
+          realtimeWatcherJob?.cancel()
+          realtimeWatcherJob = viewModelScope.launch {
+              while (true) {
+                  delay(45_000L)
+                  val state = _uiState.value
+                  val account = state.activeAccount ?: continue
+                  val realtimeRules = state.syncRules.filter {
+                      it.enabled && it.frequency == SyncFrequency.REALTIME && it.id !in state.activeSyncingRuleIds
+                  }
+                  realtimeRules.forEach { rule ->
+                      runSyncRuleInternal(account, rule, silent = true)
+                  }
+              }
+          }
+      }
+  
+      // region Login & Multi-Server Management
+  
+      fun updateLoginForm(transform: (LoginFormState) -> LoginFormState) {
+          _uiState.update { it.copy(loginForm = transform(it.loginForm).copy(errorMessage = null)) }
+      }
+  
+      fun probeServerConnection() {
+          val rawUrl = _uiState.value.loginForm.serverUrl
+          viewModelScope.launch {
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/viewmodel/KodUiState.kt, endLine=188, startLine=1)
+Response:
+  package com.example.viewmodel
+  
+  import com.example.model.AppPreferences
+  import com.example.model.BreadcrumbNode
+  import com.example.model.KodAccount
+  import com.example.model.KodAdminOverview
+  import com.example.model.KodFileItem
+  import com.example.model.KodFileTypeCategory
+  import com.example.model.KodPluginApp
+  import com.example.model.KodShareItem
+  import com.example.model.KodSpace
+  import com.example.model.KodTag
+  import com.example.model.KodUserDeviceItem
+  import com.example.model.KodUserLogItem
+  import com.example.model.KodWorkspaceApp
+  import com.example.model.MainTab
+  import com.example.model.SearchFilterState
+  import com.example.model.ServerProbeInfo
+  import com.example.model.ShareSubTab
+  import com.example.model.SyncRule
+  import com.example.model.SyncSubTab
+  import com.example.model.TransferTask
+  import java.io.File
+  
+  sealed interface KodUiEvent {
+      data class ShowMessage(val message: String, val isError: Boolean = false) : KodUiEvent
+      data class CopyToClipboard(val label: String, val text: String) : KodUiEvent
+      data class OpenLocalFile(val file: File, val mimeType: String) : KodUiEvent
+  }
+  
+  data class LoginFormState(
+      val serverUrl: String = "",
+      val username: String = "",
+      val password: String = "",
+      val accessToken: String = "",
+      val checkCode: String = "",
+      val useTokenMode: Boolean = false,
+      val isProbing: Boolean = false,
+      val isLoggingIn: Boolean = false,
+      val probeInfo: ServerProbeInfo? = null,
+      val captchaBytes: ByteArray? = null,
+      val errorMessage: String? = null
+  )
+  
+  data class FolderPickerState(
+      val isMove: Boolean = false,
+      val isForSyncTarget: Boolean = false,
+      val targetItems: List<KodFileItem> = emptyList(),
+      val currentPath: String,
+      val currentTitle: String,
+      val breadcrumbs: List<BreadcrumbNode>,
+      val folders: List<KodFileItem>,
+      val isLoading: Boolean = false,
+      val errorMessage: String? = null
+  )
+  
+  data class SyncRemoteSelection(
+      val remotePath: String,
+      val remoteLabel: String
+  )
+  
+  data class PreviewState(
+      val item: KodFileItem,
+      val textContent: String = "",
+      val isLoadingText: Boolean = false,
+      val isSavingText: Boolean = false,
+      val isEditingText: Boolean = false,
+      val errorMessage: String? = null
+  )
+  
+  data class KodUiState(
+      val isHydrated: Boolean = false,
+      val accounts: List<KodAccount> = emptyList(),
+      val activeAccount: KodAccount? = null,
+      val showAddAccountLogin: Boolean = false,
+      val preferences: AppPreferences = AppPreferences(),
+      val loginForm: LoginFormState = LoginFormState(),
+      val serverPlugins: List<KodPluginApp> = emptyList(),
+      val workspaceApps: List<KodWorkspaceApp> = emptyList(),
+      val activeWorkspaceApp: KodWorkspaceApp? = null,
+      val showAppHubSheet: Boolean = false,
+      val cacheSizeBytes: Long = 0L,
+  
+      // Main workspace navigation
+      val activeTab: MainTab = MainTab.FILES,
+      val activeSpace: KodSpace = KodSpace.PERSONAL,
+      val activeFileTypeCategory: KodFileTypeCategory = KodFileTypeCategory.ALL,
+      val currentPath: String = "",
+      val currentTitle: String = "个人空间",
+      val breadcrumbs: List<BreadcrumbNode> = emptyList(),
+  
+      // Files list (rawFiles from server + filtered display files)
+      val rawFiles: List<KodFileItem> = emptyList(),
+      val files: List<KodFileItem> = emptyList(),
+      val isLoadingFiles: Boolean = false,
+      val filesError: String? = null,
+  
+      // Search & multi-dimensional filters
+      val isSearchActive: Boolean = false,
+      val searchQuery: String = "",
+      val searchFilter: SearchFilterState = SearchFilterState(),
+      val showFilterSheet: Boolean = false,
+  
+      // Multi-select
+      val selectedPaths: Set<String> = emptySet(),
+  
+      // KodBox Tags
+      val availableTags: List<KodTag> = emptyList(),
+      val activeTagFilter: KodTag? = null,
+  
+      // Media tab
+      val mediaItems: List<KodFileItem> = emptyList(),
+      val mediaFilter: String = "ALL",
+      val isLoadingMedia: Boolean = false,
+      val mediaError: String? = null,
+  
+      // Shares tab (External Links + My Collaboration + Shared With Me)
+      val activeShareSubTab: ShareSubTab = ShareSubTab.EXTERNAL_LINKS,
+      val shares: List<KodShareItem> = emptyList(),
+      val collabShares: List<KodShareItem> = emptyList(),
+      val sharedWithMeItems: List<KodFileItem> = emptyList(),
+      val isLoadingShares: Boolean = false,
+      val sharesError: String? = null,
+      val editingShare: KodShareItem? = null,
+  
+      // Bidirectional Sync & Transfers unified tab
+      val activeSyncSubTab: SyncSubTab = SyncSubTab.RULES,
+      val syncRules: List<SyncRule> = emptyList(),
+      val activeSyncingRuleIds: Set<String> = emptySet(),
+      val pickedSyncRemote: SyncRemoteSelection? = null,
+      val transfers: List<TransferTask> = emptyList(),
+  
+      // Account Center & Admin Console
+      val showAccountCenter: Boolean = false,
+      val isLoadingAccountCenter: Boolean = false,
+      val userDevices: List<KodUserDeviceItem> = emptyList(),
+      val userLogs: List<KodUserLogItem> = emptyList(),
+      val showAdminConsole: Boolean = false,
+      val isLoadingAdmin: Boolean = false,
+      val adminOverview: KodAdminOverview? = null,
+      val adminError: String? = null,
+  
+      // Secondary screens & sheets
+      val showSettings: Boolean = false,
+      val previewState: PreviewState? = null,
+      val actionSheetItem: KodFileItem? = null,
+      val detailDialogItem: KodFileItem? = null,
+      val shareDialogItem: KodFileItem? = null,
+      val createdShareResult: KodShareItem? = null,
+      val tagSheetItem: KodFileItem? = null,
+      val renameDialogItem: KodFileItem? = null,
+      val folderPickerState: FolderPickerState? = null,
+      val isWorking: Boolean = false,
+      val serverHealthMessage: String? = null
+  ) {
+      val isInSelectionMode: Boolean
+          get() = selectedPaths.isNotEmpty()
+  
+      val selectedItems: List<KodFileItem>
+          get() = files.filter { it.path in selectedPaths }
+  
+      val activeTransferCount: Int
+          get() = transfers.count { it.status == com.example.model.TransferStatus.RUNNING }
+  
+      val canNavigateUp: Boolean
+          get() = breadcrumbs.size > 1
+  
+      /**
+       * Resolves the prominent top-left workspace plugin button (prioritizing `project` 项目管理
+       * or user's pinned workspace app, filtering admin-only plugins for non-admin accounts).
+       */
+      val visibleWorkspaceApps: List<KodWorkspaceApp>
+          get() {
+              val isAdmin = activeAccount?.isAdmin == true
+              return workspaceApps.filter { !it.isAdminOnly || isAdmin }
+          }
+  
+      val primaryTopLeftApp: KodWorkspaceApp?
+          get() {
+              val visible = visibleWorkspaceApps
+              if (visible.isEmpty()) return null
+              val pinned = preferences.pinnedAppId.trim()
+              return visible.firstOrNull { it.id.equals(pinned, ignoreCase = true) }
+                  ?: visible.firstOrNull { it.id.equals("project", ignoreCase = true) }
+                  ?: visible.firstOrNull()
+          }
+  }
+  
+Call: grep(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodBoxApiClient.kt, pattern=fun (upload|download))
+Response:
+  [Project source]
+  C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodBoxApiClient.kt (1477 lines):
+    line 1026: suspend fun uploadFile(
+    line 1088: suspend fun downloadFile(
+    line 1126: suspend fun downloadFileToStream(
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodBoxApiClient.kt, endLine=1165, startLine=1020)
+Response:
+                  )
+              )
+              if (!isKodSuccess(json)) error(extractKodError(json, "保存文件失败"))
+          }
+      }
+  
+      suspend fun uploadFile(
+          account: KodAccount,
+          targetDir: String,
+          fileName: String,
+          mimeType: String,
+          inputStreamProvider: () -> InputStream?,
+          totalBytes: Long,
+          onProgress: (bytesWritten: Long, total: Long) -> Unit
+      ): Result<Unit> = withContext(Dispatchers.IO) {
+          hydrateAccountSession(account)
+          runCatching {
+              val url = buildAuthenticatedUrl(account, "explorer/index/fileUpload", emptyMap())
+              val progressBody = object : RequestBody() {
+                  override fun contentType(): MediaType? = mimeType.toMediaTypeOrNull()
+                  override fun contentLength(): Long = if (totalBytes > 0L) totalBytes else -1L
+                  override fun writeTo(sink: BufferedSink) {
+                      val stream = inputStreamProvider() ?: error("无法读取本地文件流")
+                      stream.use { input ->
+                          val buffer = ByteArray(16 * 1024)
+                          var uploaded = 0L
+                          while (true) {
+                              val read = input.read(buffer)
+                              if (read == -1) break
+                              sink.write(buffer, 0, read)
+                              uploaded += read
+                              onProgress(uploaded, totalBytes)
+                          }
+                      }
+                  }
+              }
+  
+              val multipartBuilder = MultipartBody.Builder()
+                  .setType(MultipartBody.FORM)
+                  .addFormDataPart("path", targetDir)
+                  .addFormDataPart("name", fileName)
+                  .addFormDataPart("chunks", "1")
+                  .addFormDataPart("chunk", "0")
+                  .addFormDataPart("size", totalBytes.coerceAtLeast(0L).toString())
+                  .addFormDataPart("file", fileName, progressBody)
+  
+              if (account.csrfToken.isNotBlank()) {
+                  multipartBuilder.addFormDataPart("CSRF_TOKEN", account.csrfToken)
+              }
+              if (account.accessToken.isNotBlank()) {
+                  multipartBuilder.addFormDataPart("accessToken", account.accessToken)
+              }
+  
+              val req = buildAuthedRequestBuilder(account, url)
+                  .post(multipartBuilder.build())
+                  .build()
+  
+              okHttpClient.newCall(req).execute().use { resp ->
+                  val rawBody = resp.body?.string().orEmpty()
+                  if (!resp.isSuccessful) error("上传失败 (HTTP ${resp.code})")
+                  val json = parseJsonObject(rawBody)
+                  if (json != null && !isKodSuccess(json)) {
+                      error(extractKodError(json, "服务器拒绝上传"))
+                  }
+              }
+          }
+      }
+  
+      suspend fun downloadFile(
+          account: KodAccount,
+          item: KodFileItem,
+          destinationFile: File,
+          onProgress: (bytesRead: Long, total: Long) -> Unit
+      ): Result<File> = withContext(Dispatchers.IO) {
+          hydrateAccountSession(account)
+          runCatching {
+              val url = buildAuthenticatedUrl(
+                  account = account,
+                  route = "explorer/index/fileDownload",
+                  params = mapOf("path" to item.path)
+              )
+              val req = buildAuthedRequestBuilder(account, url).get().build()
+              okHttpClient.newCall(req).execute().use { resp ->
+                  if (!resp.isSuccessful) error("下载失败 (HTTP ${resp.code})")
+                  val body = resp.body ?: error("响应体为空")
+                  val expectedTotal = body.contentLength().takeIf { it > 0L } ?: item.size
+                  destinationFile.parentFile?.mkdirs()
+                  body.byteStream().use { input ->
+                      FileOutputStream(destinationFile).use { output ->
+                          val buffer = ByteArray(16 * 1024)
+                          var downloaded = 0L
+                          while (true) {
+                              val read = input.read(buffer)
+                              if (read == -1) break
+                              output.write(buffer, 0, read)
+                              downloaded += read
+                              onProgress(downloaded, expectedTotal)
+                          }
+                          output.flush()
+                      }
+                  }
+                  destinationFile
+              }
+          }
+      }
+  
+      suspend fun downloadFileToStream(
+          account: KodAccount,
+          item: KodFileItem,
+          outputStreamProvider: () -> java.io.OutputStream?
+      ): Result<Long> = withContext(Dispatchers.IO) {
+          hydrateAccountSession(account)
+          runCatching {
+              val url = buildAuthenticatedUrl(
+                  account = account,
+                  route = "explorer/index/fileDownload",
+                  params = mapOf("path" to item.path)
+              )
+              val req = buildAuthedRequestBuilder(account, url).get().build()
+              okHttpClient.newCall(req).execute().use { resp ->
+                  if (!resp.isSuccessful) error("同步下载失败 (HTTP ${resp.code})")
+                  val body = resp.body ?: error("响应体为空")
+                  val out = outputStreamProvider() ?: error("无法写入本地同步文件夹")
+                  var total = 0L
+                  body.byteStream().use { input ->
+                      out.use { output ->
+                          val buffer = ByteArray(16 * 1024)
+                          while (true) {
+                              val read = input.read(buffer)
+                              if (read == -1) break
+                              output.write(buffer, 0, read)
+                              total += read
+                          }
+                          output.flush()
+                      }
+                  }
+                  total
+              }
+          }
+      }
+  
+      fun buildThumbnailUrl(account: KodAccount, item: KodFileItem, width: Int = 320): String {
+          if (item.fileThumb.startsWith("http://") || item.fileThumb.startsWith("https://")) {
+              return item.fileThumb
+          }
+          if (item.fileThumb.isNotBlank() && item.fileThumb.startsWith("/")) {
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/gradle/libs.versions.toml)
+Response:
+  [versions]
+  agp = "9.5.2"
+  coreKtx = "1.18.0"
+  junit = "4.13.2"
+  junitVersion = "1.3.0"
+  espressoCore = "3.7.0"
+  lifecycleRuntimeKtx = "2.8.7"
+  lifecycleViewmodelCompose = "2.8.7"
+  lifecycleRuntimeCompose = "2.8.7"
+  activityCompose = "1.10.1"
+  kotlin = "2.4.21"
+  composeBom = "2024.09.00"
+  googleDevtoolsKsp = "2.3.6"
+  navigationCompose = "2.8.9"
+  roomRuntime = "2.7.0"
+  roomKtx = "2.7.0"
+  roomCompiler = "2.7.0"
+  kotlinxCoroutinesTest = "1.10.2"
+  core = "1.6.1"
+  runner = "1.6.2"
+  coilCompose = "2.7.0"
+  retrofit = "2.12.0"
+  converterMoshi = "2.12.0"
+  kotlinxCoroutinesAndroid = "1.10.2"
+  kotlinxCoroutinesCore = "1.10.2"
+  accompanistPermissions = "0.37.3"
+  playServicesLocation = "21.3.0"
+  cameraCamera2 = "1.5.0"
+  cameraLifecycle = "1.5.0"
+  cameraView = "1.5.0"
+  cameraCore = "1.5.0"
+  loggingInterceptor = "4.10.0"
+  okhttp = "4.10.0"
+  moshiKotlin = "1.15.2"
+  moshiKotlinCodegen = "1.15.2"
+  datastorePreferences = "1.1.7"
+  robolectric = "4.16.1"
+  firebaseBom = "35.1.0"
+  secretsGradlePlugin = "2.0.1"
+  googleServices = "4.5.0"
+  credentials = "1.5.0"
+  googleid = "1.1.1"
+  documentfile = "1.0.1"
+  workRuntimeKtx = "2.10.0"
+  media3 = "1.5.1"
+  
+  
+  [libraries]
+  androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+  junit = { group = "junit", name = "junit", version.ref = "junit" }
+  androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+  androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+  androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
+  androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycleViewmodelCompose" }
+  androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleRuntimeCompose" }
+  androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+  androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+  androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+  androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+  androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+  androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+  androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
+  androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+  androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
+  androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "roomRuntime" }
+  androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "roomKtx" }
+  androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "roomCompiler" }
+  kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "kotlinxCoroutinesTest" }
+  androidx-core = { group = "androidx.test", name = "core", version.ref = "core" }
+  androidx-runner = { group = "androidx.test", name = "runner", version.ref = "runner" }
+  androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+  androidx-compose-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
+  androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
+  coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coilCompose" }
+  retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
+  converter-moshi = { group = "com.squareup.retrofit2", name = "converter-moshi", version.ref = "converterMoshi" }
+  kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutinesAndroid" }
+  kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinxCoroutinesCore" }
+  accompanist-permissions = { group = "com.google.accompanist", name = "accompanist-permissions", version.ref = "accompanistPermissions" }
+  play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
+  androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "cameraCamera2" }
+  androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraLifecycle" }
+  androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraView" }
+  androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "cameraCore" }
+  logging-interceptor = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "loggingInterceptor" }
+  okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+  moshi-kotlin = { group = "com.squareup.moshi", name = "moshi-kotlin", version.ref = "moshiKotlin" }
+  moshi-kotlin-codegen = { group = "com.squareup.moshi", name = "moshi-kotlin-codegen", version.ref = "moshiKotlinCodegen" }
+  androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastorePreferences" }
+  robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+  firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
+  firebase-ai = { group = "com.google.firebase", name = "firebase-ai" }
+  firebase-appcheck-recaptcha = { group = "com.google.firebase", name = "firebase-appcheck-recaptcha" }
+  firebase-appcheck-debug = { group = "com.google.firebase", name = "firebase-appcheck-debug" }
+  firebase-firestore = { group = "com.google.firebase", name = "firebase-firestore" }
+  firebase-auth = { group = "com.google.firebase", name = "firebase-auth" }
+  androidx-credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }
+  androidx-credentials-play-services = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }
+  googleid = { group = "com.google.android.libraries.identity.googleid", name = "googleid", version.ref = "googleid" }
+  androidx-documentfile = { group = "androidx.documentfile", name = "documentfile", version.ref = "documentfile" }
+  androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workRuntimeKtx" }
+  androidx-media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
+  androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
+  androidx-media3-datasource-okhttp = { group = "androidx.media3", name = "media3-datasource-okhttp", version.ref = "media3" }
+  
+  
+  [plugins]
+  android-application = { id = "com.android.application", version.ref = "agp" }
+  kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+  google-devtools-ksp = { id = "com.google.devtools.ksp", version.ref = "googleDevtoolsKsp" }
+  secrets = { id = "com.google.android.libraries.mapsplatform.secrets-gradle-plugin", version.ref = "secretsGradlePlugin" }
+  google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }
+  
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/viewmodel/KodViewModel.kt, endLine=1320, startLine=1190)
+Response:
+  
+      // region Bidirectional Folder Sync
+  
+      fun createSyncRule(
+          name: String,
+          localTreeUri: String,
+          localFolderLabel: String,
+          remotePath: String,
+          remoteFolderLabel: String,
+          direction: SyncDirection,
+          frequency: SyncFrequency,
+          wifiOnly: Boolean
+      ) {
+          val account = _uiState.value.activeAccount ?: return
+          val rule = SyncRule(
+              id = UUID.randomUUID().toString(),
+              accountId = account.id,
+              name = name.ifBlank { "$localFolderLabel ⇄ $remoteFolderLabel" },
+              localTreeUri = localTreeUri,
+              localFolderLabel = localFolderLabel,
+              remotePath = remotePath,
+              remoteFolderLabel = remoteFolderLabel,
+              direction = direction,
+              frequency = frequency,
+              wifiOnly = wifiOnly,
+              enabled = true
+          )
+          viewModelScope.launch {
+              accountStore.saveOrUpdateSyncRule(rule)
+              KodSyncEngine.scheduleRule(getApplication(), rule)
+              _uiState.update { it.copy(pickedSyncRemote = null) }
+              emitMessage("已添加同步任务：${rule.name}")
+              runSyncRuleInternal(account, rule, silent = false)
+          }
+      }
+  
+      fun toggleSyncRuleEnabled(rule: SyncRule, enabled: Boolean) {
+          val updated = rule.copy(enabled = enabled)
+          viewModelScope.launch {
+              accountStore.saveOrUpdateSyncRule(updated)
+              KodSyncEngine.scheduleRule(getApplication(), updated)
+              emitMessage(if (enabled) "已启用自动同步：${rule.name}" else "已暂停自动同步：${rule.name}")
+          }
+      }
+  
+      fun updateSyncRuleFrequency(rule: SyncRule, frequency: SyncFrequency) {
+          val updated = rule.copy(frequency = frequency)
+          viewModelScope.launch {
+              accountStore.saveOrUpdateSyncRule(updated)
+              KodSyncEngine.scheduleRule(getApplication(), updated)
+              emitMessage("同步频率已更改为：${frequency.label}")
+          }
+      }
+  
+      fun updateSyncRuleDirection(rule: SyncRule, direction: SyncDirection) {
+          val updated = rule.copy(direction = direction)
+          viewModelScope.launch {
+              accountStore.saveOrUpdateSyncRule(updated)
+              emitMessage("同步模式已更改为：${direction.label}")
+          }
+      }
+  
+      fun deleteSyncRule(rule: SyncRule) {
+          viewModelScope.launch {
+              KodSyncEngine.cancelRule(getApplication(), rule.id)
+              accountStore.removeSyncRule(rule.id)
+              emitMessage("已删除同步任务：${rule.name}")
+          }
+      }
+  
+      fun runSyncRuleNow(rule: SyncRule) {
+          val account = _uiState.value.activeAccount ?: return
+          viewModelScope.launch {
+              runSyncRuleInternal(account, rule, silent = false)
+          }
+      }
+  
+      fun runAllSyncRulesNow() {
+          val account = _uiState.value.activeAccount ?: return
+          val rules = _uiState.value.syncRules.filter { it.enabled }
+          if (rules.isEmpty()) {
+              emitMessage("暂无已启用的同步任务")
+              return
+          }
+          viewModelScope.launch {
+              rules.forEach { rule ->
+                  runSyncRuleInternal(account, rule, silent = false)
+              }
+          }
+      }
+  
+      private suspend fun runSyncRuleInternal(account: KodAccount, rule: SyncRule, silent: Boolean) {
+          if (rule.id in _uiState.value.activeSyncingRuleIds) return
+          _uiState.update { it.copy(activeSyncingRuleIds = it.activeSyncingRuleIds + rule.id) }
+          val runningRule = rule.copy(lastStatus = SyncRunStatus.SYNCING)
+          accountStore.saveOrUpdateSyncRule(runningRule)
+  
+          val outcome = syncEngine.executeSyncRule(account, rule)
+          outcome.fold(
+              onSuccess = { res ->
+                  val done = rule.copy(
+                      lastSyncTime = System.currentTimeMillis(),
+                      lastStatus = SyncRunStatus.SUCCESS,
+                      lastSummary = res.summary
+                  )
+                  accountStore.saveOrUpdateSyncRule(done)
+                  if (!silent) {
+                      emitMessage("${rule.name} 同步完成 (${res.summary})")
+                  }
+                  if (res.uploadedCount > 0) {
+                      refreshCurrentDirectory()
+                  }
+              },
+              onFailure = { err ->
+                  val failed = rule.copy(
+                      lastSyncTime = System.currentTimeMillis(),
+                      lastStatus = SyncRunStatus.ERROR,
+                      lastSummary = err.message ?: "同步异常"
+                  )
+                  accountStore.saveOrUpdateSyncRule(failed)
+                  if (!silent) {
+                      emitError("${rule.name} 同步失败：${err.message}")
+                  }
+              }
+          )
+          _uiState.update { it.copy(activeSyncingRuleIds = it.activeSyncingRuleIds - rule.id) }
+      }
+  
+      // endregion
+  
+      // region Media Gallery
+Call: read_file(absolutePath=C:/Users/young/StudioProjects/KodNext/app/src/main/res/xml/network_security_config.xml)
+Response:
+  <?xml version="1.0" encoding="utf-8"?>
+  <network-security-config>
+      <!-- Allow connecting to private LAN / self-hosted HTTP KodBox instances as well as HTTPS -->
+      <base-config cleartextTrafficPermitted="true">
+          <trust-anchors>
+              <certificates src="system" />
+          </trust-anchors>
+      </base-config>
+  </network-security-config>
+  
+Agent:  
+**你的分析非常准确，切中了当前代码演进的核心痛点。**
+
+结合当前源码来看，KodNext 的基础架构（Compose + 单向数据流 UDF + OkHttp + SAF 零广域存储权限）作为 V1–V4 的功能闭环非常紧凑务实；但随着功能膨胀到网盘、相册、协作、双向同步、传输、插件 WebView 和管理员后台，现有架构已经开始出现瓶颈。
+
+下面对照项目实际代码，逐一验证你的三点判断并补充更完整的工程化建议：
+
+---
+
+### 一、逐条评估你的分析（对照当前源码）
+
+#### 1. [`KodViewModel.kt`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/viewmodel/KodViewModel.kt) 职责过重 —— **完全合理（优先级最高）**
+* **现状核实**：[`KodViewModel.kt`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/viewmodel/KodViewModel.kt) 已膨胀至 **1,874 行 / 131 个成员**，对应的 [`KodUiState.kt`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/viewmodel/KodUiState.kt) 也塞入了 60+ 个字段，涵盖登录探测、文件浏览/搜索/批操作、文件夹选择器、外链协作、双向同步、传输队列、媒体预览编辑、账号中心、后台管理等全部状态。
+* **隐藏的衍生问题**：
+  1. **高频状态污染**：传输进度（`transfers`）每秒多次更新会触发整个 `KodUiState` 重新发射，容易引起无关界面的重组检查。
+  2. **缺少 Repository 与 DI 层**：目前 `KodViewModel` 内部直接实例化了 `KodBoxApiClient`、`KodAccountStore`、`KodDirectoryCache`、`KodSyncEngine`。**如果直接拆分 ViewModel 而不先抽离 Repository + 依赖注入（如 Hilt / Koin / 手动 `AppContainer`）**，各 ViewModel 会各自持有独立的 CookieJar 和目录缓存，导致登录态与缓存不同步。
+  3. **页面导航耦合在 State 中**：[`MainActivity.kt`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/MainActivity.kt) 仍通过 `showSettings`、`previewState`、`showAdminConsole` 等状态字段切换全屏页面，而非借助 Navigation 路由隔离各页面的 ViewModel 生命周期。
+
+#### 2. 后台同步与长时传输机制 —— **方向正确，需区分“已有”和“缺失”**
+* **现状核实（比想象中多一点，但缺口很大）**：
+  * **已接入部分**：[`KodSyncEngine.kt`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodSyncEngine.kt) **已经使用了 `WorkManager`**（[`KodSyncWorker`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodSyncEngine.kt#L194-L247) + `enqueueUniquePeriodicWork`），并配置了 `UNMETERED`（仅 Wi-Fi）网络约束。
+  * **真正薄弱的环节**：
+    1. **手动上传/下载完全没有后台保障**：[`uploadUris`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/viewmodel/KodViewModel.kt#L1432-L1484) 和 [`downloadItems`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/viewmodel/KodViewModel.kt#L1486-L1546) 直接跑在 `viewModelScope.launch` 内存协程中，[`AndroidManifest.xml`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/AndroidManifest.xml) 未声明前台服务及通知权限，App 被杀或进入后台限流即中断。
+    2. **大文件传输能力不足**：[`KodBoxApiClient.uploadFile`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodBoxApiClient.kt#L1026-L1086) 目前写死了 `chunks="1", chunk="0"` 单次流式上传（且 `writeTimeout` 仅 60s），大文件极易超时且不支持分片断点续传。
+    3. **前台轮询与 Worker 混用**：[`startRealtimeSyncWatcher`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/viewmodel/KodViewModel.kt#L150-L165) 在 ViewModel 中用 `delay(45_000L)` 轮询 `REALTIME` 规则，且未检查 `wifiOnly` 约束；而 [`KodSyncWorker`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodSyncEngine.kt#L194-L247) 每次执行都会重新 `new KodBoxApiClient()`，未复用全局会话状态。
+* **优化建议补充**：
+  * **周期同步**：保留 `WorkManager` 周期调度，改为注入全局共享的 `SyncRepository` / `ApiClient`，对 `401/认证失效` 返回 `Result.failure()` 而非无休止 `Result.retry()`，并支持子目录递归和本地/远端变更索引比对。
+  * **大文件上传/下载**：迁移到 `WorkManager` 的 `OneTimeWorkRequest` + **`ForegroundInfo`（`FOREGROUND_SERVICE_DATA_SYNC`）**；在 Android 14+（`targetSdk = 36`）针对用户显式触发的大文件传输可结合 **`User-Initiated Data Transfer`（`JobInfo.Builder.setUserInitiated(true)` / WorkManager `Expedited` 或前景化任务）**，同时在 [`KodBoxApiClient`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodBoxApiClient.kt) 补齐 KodBox 原生分片上传（`chunk`/`chunks`）和 Range 断点下载。
+
+#### 3. 数据持久化与安全存储 —— **非常合理且工程上最紧迫**
+* **现状核实**：
+  1. **敏感凭据明文落盘风险**：[`KodAccountStore.kt`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodAccountStore.kt) 目前把所有数据都存在普通 Preferences DataStore（`kodnext_prefs`）中，其中 `ACCOUNTS_JSON` 直接明文保存了 `accessToken`、`cookiesHeader` 和 `csrfToken`。
+  2. **缺乏结构化持久化**：`sync_rules_json` 靠手动拼接 `JSONArray` 存进 DataStore；[`KodDirectoryCache.kt`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodDirectoryCache.kt) 仅是内存 LRU（TTL 90s）；`transfers` 传输队列仅存于 `KodUiState` 内存，重启 App 即清空。
+  3. **基础设施已留口子**：[`app/build.gradle.kts`](file:///C:/Users/young/StudioProjects/KodNext/app/build.gradle.kts) 和 [`libs.versions.toml`](file:///C:/Users/young/StudioProjects/KodNext/gradle/libs.versions.toml) 已经预配置了 **Room (`2.7.0`) + KSP**（目前处于注释状态）。
+* **安全存储的现代实现细节（重要避坑）**：
+  * **普通设置 → Preferences DataStore**：保留主题、视图模式、排序字段、置顶插件 ID 等轻配置。
+  * **结构化业务数据 → Room**：迁移 `SyncRule`、同步历史/冲突状态、`TransferTask`（支持失败重试与断点信息）、以及离线目录缓存（作为网络前的持久化 L2 缓存）。
+  * **敏感凭据 → Android Keystore + 加密 DataStore / Tink**：**不要再新引入已废弃的 `androidx.security:security-crypto`（`EncryptedSharedPreferences`）**。建议用 **Android Keystore（`AES/GCM/NoPadding`）或 Google Tink 配合 Proto DataStore** 加密存储 `accessToken`、`cookiesHeader`、`csrfToken`；账号的非敏感展示信息（`username`、`nickName`、`serverUrl`、`sizeUse` 等）放 Room，按 `accountId` 关联。
+
+---
+
+### 二、更完整的架构演进总结与补充建议
+
+除了你提到的 3 点，结合当前代码库还有 **3 个配套改造** 能让整体架构真正落地：
+
+```
+UI Layer (Navigation Compose + 按页面拆分的 Screen & ViewModel)
+   │  (UiState / UiEvent)
+   ▼
+Domain / Repository Layer (统一通过 Hilt 或 AppContainer 注入单例)
+   ├── AuthRepository       (多账号切换、Keystore 加密凭据、Session 过期自动刷新)
+   ├── FileRepository       (SWR 策略：Room L2 缓存 + KodDirectoryCache L1 + 远端 API)
+   ├── TransferRepository   (分片上传/断点下载 + WorkManager/ForegroundInfo 任务队列持久化)
+   └── SyncRepository       (WorkManager 周期调度 + 增量目录对账引擎)
+   │
+   ▼
+Data & Infrastructure Layer
+   ├── Network: 拆分 KodBoxApiClient (AuthApi / FileApi / ShareApi / AdminApi) + 统一 Interceptor
+   ├── Local DB: Room (FileCacheEntity, SyncRuleEntity, TransferTaskEntity)
+   └── Prefs & Secrets: Preferences DataStore (普通配置) + Keystore 加密存储 (Token/Cookie)
+```
+
+#### 建议的渐进式重构优先级
+
+1. **P0（止血 & 底座）**：
+   * 引入 **DI（建议 Hilt 或轻量 `AppContainer`）**，把 [`KodBoxApiClient`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodBoxApiClient.kt)、[`KodSessionCookieJar`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodSessionCookieJar.kt)、[`KodAccountStore`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodAccountStore.kt) 变为真正全局单例（解决 `KodSyncWorker` 与 UI 共享会话问题）。
+   * 拆分凭据存储：用 **Keystore + 加密 DataStore** 隔离 `accessToken`/`cookiesHeader`。
+2. **P1（核心持久化 & 后台可靠性）**：
+   * 启用 `app/build.gradle.kts` 中已有的 **Room + KSP**，先将 `TransferTask` 和 `SyncRule` 落库。
+   * 将手动上传/下载迁入 `WorkManager`（配 `ForegroundInfo` 和 `FOREGROUND_SERVICE_DATA_SYNC`），补充 KodBox 分片上传以支持大文件。
+3. **P2（可维护性拆分）**：
+   * 引入 **Repository 层**，然后将 [`KodViewModel`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/viewmodel/KodViewModel.kt) 拆分为 `SessionViewModel`（多账号/导航级共享）、`FilesViewModel`、`MediaViewModel`、`ShareViewModel`、`SyncAndTransferViewModel`、`AdminViewModel`。
+   * 启用已引入的 `navigation-compose` 替代 [`MainActivity.kt`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/MainActivity.kt) 中基于布尔状态的页面切换。
+   * 按领域拆分 1,477 行的 [`KodBoxApiClient.kt`](file:///C:/Users/young/StudioProjects/KodNext/app/src/main/java/com/example/data/KodBoxApiClient.kt)，并补充 OkHttp 会话失效自动重登/提示机制与单元测试。

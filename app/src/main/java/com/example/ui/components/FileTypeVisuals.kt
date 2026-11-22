@@ -8,6 +8,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -120,7 +122,7 @@ fun resolveFileVisual(item: KodFileItem): FileVisualSpec {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun NextcloudFileListItem(
     item: KodFileItem,
@@ -235,7 +237,11 @@ fun NextcloudFileListItem(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 val metaText = if (item.isFolder) {
-                    KodFormatters.formatTimestamp(item.modifyTime)
+                    buildString {
+                        append(KodFormatters.formatTimestamp(item.modifyTime))
+                        if (item.size > 0L) append(" · ${KodFormatters.formatBytes(item.size)}")
+                        if (item.childCount > 0) append(" · ${item.childCount}项")
+                    }
                 } else {
                     "${KodFormatters.formatBytes(item.size)} · ${KodFormatters.formatTimestamp(item.modifyTime)}"
                 }
@@ -246,20 +252,54 @@ fun NextcloudFileListItem(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
 
-                // KodBox Color Tag Dots
-                if (item.tags.isNotEmpty()) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        item.tags.take(3).forEach { tag ->
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(tag.colorHex))
+            // Optional description note badge or inline colored tag pills (inspired by KodBox file rows)
+            if (item.description.isNotBlank() || item.tags.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (item.description.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh
+                        ) {
+                            Text(
+                                text = "“${item.description}”",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
+                        }
+                    }
+                    item.tags.take(3).forEach { tag ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(tag.colorHex).copy(alpha = 0.12f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(tag.colorHex))
+                                )
+                                Text(
+                                    text = tag.name,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }

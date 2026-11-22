@@ -7,6 +7,8 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.data.security.AccountSecret
+import com.example.data.security.KodCredentialVault
 import com.example.model.AppPreferences
 import com.example.model.KodAccount
 import com.example.model.SortField
@@ -18,13 +20,23 @@ import com.example.model.SyncRunStatus
 import com.example.model.ThemePreference
 import com.example.model.ViewMode
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 import org.json.JSONObject
 
 private val Context.kodDataStore: DataStore<Preferences> by preferencesDataStore(name = "kodnext_prefs")
 
-class KodAccountStore(private val context: Context) {
+/**
+ * Stores non-sensitive account metadata and user preferences in Preferences DataStore,
+ * while isolating sensitive session credentials (accessToken, cookiesHeader, csrfToken)
+ * inside the Android Keystore-backed [KodCredentialVault].
+ */
+class KodAccountStore(
+    private val context: Context,
+    private val credentialVault: KodCredentialVault
+) {
 
     private object Keys {
         val ACCOUNTS_JSON = stringPreferencesKey("accounts_json")
@@ -36,19 +48,18 @@ class KodAccountStore(private val context: Context) {
         val SHOW_THUMBNAILS = booleanPreferencesKey("show_thumbnails")
         val THEME_PREF = stringPreferencesKey("theme_pref")
         val PINNED_APP_ID = stringPreferencesKey("pinned_app_id")
-        val SYNC_RULES_JSON = stringPreferencesKey("sync_rules_json")
+        val LEGACY_SYNC_RULES_JSON = stringPreferencesKey("sync_rules_json")
     }
 
-    val accountsFlow: Flow<List<KodAccount>> = context.kodDataStore.data.map { prefs ->
-        decodeAccounts(prefs[Keys.ACCOUNTS_JSON].orEmpty())
+    val accountsFlow: Flow<List<KodAccount>> = combine(
+        context.kodDataStore.data,
+        credentialVault.secretsFlow
+    ) { prefs, secretsMap ->
+        decodeAccounts(prefs[Keys.ACCOUNTS_JSON].orEmpty(), secretsMap)
     }
 
     val activeAccountIdFlow: Flow<String?> = context.kodDataStore.data.map { prefs ->
         prefs[Keys.ACTIVE_ACCOUNT_ID]
-    }
-
-    val syncRulesFlow: Flow<List<SyncRule>> = context.kodDataStore.data.map { prefs ->
-        decodeSyncRules(prefs[Keys.SYNC_RULES_JSON].orEmpty())
     }
 
     val preferencesFlow: Flow<AppPreferences> = context.kodDataStore.data.map { prefs ->
@@ -63,16 +74,85 @@ class KodAccountStore(private val context: Context) {
         )
     }
 
+    /**
+     * One-time transparent migration: moves any legacy plaintext tokens/cookies found in
+     * `accounts_json` into Keystore-encrypted [KodCredentialVault] and scrubs them from DataStore.
+     */
+    suspend fun migrateLegacySecretsIfNeeded() {
+        val prefs = context.kodDataStore.data.first()
+        val raw = prefs[Keys.ACCOUNTS_JSON].orEmpty()
+        if (raw.isBlank()) return
+        val array = runCatching { JSONArray(raw) }.getOrNull() ?: return
+
+        var foundPlaintextSecret = false
+        val legacySecrets = mutableListOf<Pair<String, AccountSecret>>()
+        for (i in 0 until array.length()) {
+            val obj = array.optJSONObject(i) ?: continue
+            val id = obj.optString("id")
+            val token = obj.optString("accessToken")
+            val cookies = obj.optString("cookiesHeader")
+            val csrf = obj.optString("csrfToken")
+            if (token.isNotBlank() || cookies.isNotBlank() || csrf.isNotBlank()) {
+                foundPlaintextSecret = true
+                if (id.isNotBlank()) {
+                    legacySecrets.add(id to AccountSecret(token, cookies, csrf))
+                }
+            }
+        }
+        if (!foundPlaintextSecret) return
+
+        for ((id, secret) in legacySecrets) {
+            val existing = credentialVault.getSecret(id)
+            if (existing.isEmpty) {
+                credentialVault.saveSecret(id, secret)
+            }
+        }
+        val accounts = decodeAccounts(raw, emptyMap())
+        context.kodDataStore.edit { mutablePrefs ->
+            mutablePrefs[Keys.ACCOUNTS_JSON] = encodeAccountsMetadataOnly(accounts)
+        }
+    }
+
+    /**
+     * Reads and clears pre-6.2 DataStore `sync_rules_json` so [com.example.data.repository.SyncRepository]
+     * can seamlessly migrate user sync rules into Room on first launch.
+     */
+    suspend fun consumeLegacySyncRules(): List<SyncRule> {
+        val prefs = context.kodDataStore.data.first()
+        val raw = prefs[Keys.LEGACY_SYNC_RULES_JSON].orEmpty()
+        if (raw.isBlank()) return emptyList()
+        val migrated = decodeSyncRules(raw)
+        context.kodDataStore.edit { mutablePrefs ->
+            mutablePrefs.remove(Keys.LEGACY_SYNC_RULES_JSON)
+        }
+        return migrated
+    }
+
     suspend fun saveOrUpdateAccount(account: KodAccount, makeActive: Boolean = true) {
+        // Persist sensitive tokens/cookies exclusively in Keystore-encrypted vault
+        credentialVault.saveSecret(
+            accountId = account.id,
+            secret = AccountSecret(
+                accessToken = account.accessToken,
+                cookiesHeader = account.cookiesHeader,
+                csrfToken = account.csrfToken
+            )
+        )
         context.kodDataStore.edit { prefs ->
-            val current = decodeAccounts(prefs[Keys.ACCOUNTS_JSON].orEmpty()).toMutableList()
-            val idx = current.indexOfFirst { it.id == account.id || (it.serverUrl == account.serverUrl && it.username == account.username) }
+            val current = decodeAccounts(prefs[Keys.ACCOUNTS_JSON].orEmpty(), emptyMap()).toMutableList()
+            val idx = current.indexOfFirst {
+                it.id == account.id || (it.serverUrl == account.serverUrl && it.username == account.username)
+            }
             if (idx >= 0) {
+                val previousId = current[idx].id
+                if (previousId != account.id && previousId.isNotBlank()) {
+                    credentialVault.removeSecret(previousId)
+                }
                 current[idx] = account
             } else {
                 current.add(0, account)
             }
-            prefs[Keys.ACCOUNTS_JSON] = encodeAccounts(current)
+            prefs[Keys.ACCOUNTS_JSON] = encodeAccountsMetadataOnly(current)
             if (makeActive) {
                 prefs[Keys.ACTIVE_ACCOUNT_ID] = account.id
             }
@@ -86,9 +166,11 @@ class KodAccountStore(private val context: Context) {
     }
 
     suspend fun removeAccount(accountId: String) {
+        credentialVault.removeSecret(accountId)
         context.kodDataStore.edit { prefs ->
-            val current = decodeAccounts(prefs[Keys.ACCOUNTS_JSON].orEmpty()).filterNot { it.id == accountId }
-            prefs[Keys.ACCOUNTS_JSON] = encodeAccounts(current)
+            val current = decodeAccounts(prefs[Keys.ACCOUNTS_JSON].orEmpty(), emptyMap())
+                .filterNot { it.id == accountId }
+            prefs[Keys.ACCOUNTS_JSON] = encodeAccountsMetadataOnly(current)
             if (prefs[Keys.ACTIVE_ACCOUNT_ID] == accountId) {
                 val nextId = current.firstOrNull()?.id
                 if (nextId != null) {
@@ -122,7 +204,7 @@ class KodAccountStore(private val context: Context) {
         }
     }
 
-    private fun encodeAccounts(accounts: List<KodAccount>): String {
+    internal fun encodeAccountsMetadataOnly(accounts: List<KodAccount>): String {
         val array = JSONArray()
         accounts.forEach { acc ->
             array.put(
@@ -138,9 +220,7 @@ class KodAccountStore(private val context: Context) {
                     put("roleId", acc.roleId)
                     put("isAdmin", acc.isAdmin)
                     put("departments", JSONArray(acc.departments))
-                    put("accessToken", acc.accessToken)
-                    put("cookiesHeader", acc.cookiesHeader)
-                    put("csrfToken", acc.csrfToken)
+                    // Intentionally OMIT accessToken, cookiesHeader, csrfToken from plaintext DataStore
                     put("userId", acc.userId)
                     put("sizeUse", acc.sizeUse)
                     put("sizeMax", acc.sizeMax)
@@ -155,13 +235,15 @@ class KodAccountStore(private val context: Context) {
         return array.toString()
     }
 
-    private fun decodeAccounts(raw: String): List<KodAccount> {
+    private fun decodeAccounts(raw: String, secretsMap: Map<String, AccountSecret>): List<KodAccount> {
         if (raw.isBlank()) return emptyList()
         return runCatching {
             val array = JSONArray(raw)
             buildList {
                 for (i in 0 until array.length()) {
                     val obj = array.optJSONObject(i) ?: continue
+                    val id = obj.optString("id")
+                    val vaultSecret = secretsMap[id]
                     val deptArr = obj.optJSONArray("departments")
                     val depts = buildList {
                         if (deptArr != null) {
@@ -173,7 +255,7 @@ class KodAccountStore(private val context: Context) {
                     }
                     add(
                         KodAccount(
-                            id = obj.optString("id"),
+                            id = id,
                             serverUrl = obj.optString("serverUrl"),
                             username = obj.optString("username"),
                             nickName = obj.optString("nickName"),
@@ -184,14 +266,19 @@ class KodAccountStore(private val context: Context) {
                             roleId = obj.optString("roleId"),
                             isAdmin = obj.optBoolean("isAdmin", false),
                             departments = depts,
-                            accessToken = obj.optString("accessToken"),
-                            cookiesHeader = obj.optString("cookiesHeader"),
-                            csrfToken = obj.optString("csrfToken"),
+                            accessToken = vaultSecret?.accessToken?.takeIf { it.isNotBlank() }
+                                ?: obj.optString("accessToken"),
+                            cookiesHeader = vaultSecret?.cookiesHeader?.takeIf { it.isNotBlank() }
+                                ?: obj.optString("cookiesHeader"),
+                            csrfToken = vaultSecret?.csrfToken?.takeIf { it.isNotBlank() }
+                                ?: obj.optString("csrfToken"),
                             userId = obj.optString("userId"),
                             sizeUse = obj.optLong("sizeUse", 0L),
                             sizeMax = obj.optLong("sizeMax", 0L),
                             serverVersion = obj.optString("serverVersion"),
-                            siteName = obj.optString("siteName", "KodBox"),
+                            siteName = obj.optString("siteName", "网盘").let {
+                                if (it == "我的网盘" || it.isBlank()) "网盘" else it
+                            },
                             personalRootPath = obj.optString("personalRootPath", "{source:1}/"),
                             groupRootPath = obj.optString("groupRootPath", "{block:enterprise}/").let {
                                 if (it == "{block:files}/" || it.isBlank()) "{block:enterprise}/" else it
@@ -202,47 +289,6 @@ class KodAccountStore(private val context: Context) {
                 }
             }
         }.getOrDefault(emptyList())
-    }
-
-    suspend fun saveOrUpdateSyncRule(rule: SyncRule) {
-        context.kodDataStore.edit { prefs ->
-            val current = decodeSyncRules(prefs[Keys.SYNC_RULES_JSON].orEmpty()).toMutableList()
-            val idx = current.indexOfFirst { it.id == rule.id }
-            if (idx >= 0) current[idx] = rule else current.add(0, rule)
-            prefs[Keys.SYNC_RULES_JSON] = encodeSyncRules(current)
-        }
-    }
-
-    suspend fun removeSyncRule(ruleId: String) {
-        context.kodDataStore.edit { prefs ->
-            val current = decodeSyncRules(prefs[Keys.SYNC_RULES_JSON].orEmpty()).filterNot { it.id == ruleId }
-            prefs[Keys.SYNC_RULES_JSON] = encodeSyncRules(current)
-        }
-    }
-
-    private fun encodeSyncRules(rules: List<SyncRule>): String {
-        val arr = JSONArray()
-        rules.forEach { rule ->
-            arr.put(
-                JSONObject().apply {
-                    put("id", rule.id)
-                    put("accountId", rule.accountId)
-                    put("name", rule.name)
-                    put("localTreeUri", rule.localTreeUri)
-                    put("localFolderLabel", rule.localFolderLabel)
-                    put("remotePath", rule.remotePath)
-                    put("remoteFolderLabel", rule.remoteFolderLabel)
-                    put("direction", rule.direction.name)
-                    put("frequency", rule.frequency.name)
-                    put("wifiOnly", rule.wifiOnly)
-                    put("enabled", rule.enabled)
-                    put("lastSyncTime", rule.lastSyncTime)
-                    put("lastStatus", rule.lastStatus.name)
-                    put("lastSummary", rule.lastSummary)
-                }
-            )
-        }
-        return arr.toString()
     }
 
     private fun decodeSyncRules(raw: String): List<SyncRule> {

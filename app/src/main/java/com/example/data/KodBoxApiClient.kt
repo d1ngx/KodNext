@@ -1,7 +1,11 @@
 package com.example.data
 
 import android.content.Context
+import android.os.Build
 import coil.ImageLoader
+import com.example.BuildConfig
+import okio.ByteString.Companion.encodeUtf8
+import java.util.Locale
 import com.example.model.BreadcrumbNode
 import com.example.model.KodAccount
 import com.example.model.KodFileItem
@@ -42,10 +46,142 @@ import java.util.concurrent.TimeUnit
  */
 class KodBoxApiClient {
 
+    companion object {
+        const val UPLOAD_CHUNK_SIZE_BYTES: Long = 4L * 1024L * 1024L // 4 MB chunks for large files
+
+        /**
+         * Computes (totalChunks, chunkSize) for KodBox chunked upload (`chunks` / `chunk` / `chunkSize`).
+         */
+        fun computeChunkPlan(totalBytes: Long, chunkSize: Long = UPLOAD_CHUNK_SIZE_BYTES): Pair<Int, Long> {
+            if (totalBytes <= 0L || totalBytes <= chunkSize) return 1 to totalBytes.coerceAtLeast(0L)
+            val totalChunks = ((totalBytes + chunkSize - 1L) / chunkSize).toInt().coerceAtLeast(1)
+            return totalChunks to chunkSize
+        }
+
+        /**
+         * Detects authentication/session expiration errors so WorkManager workers fail fast
+         * instead of looping on Result.retry().
+         */
+        fun isAuthFailure(error: Throwable?): Boolean {
+            val msg = error?.message.orEmpty()
+            return msg.contains("HTTP 401", ignoreCase = true) ||
+                msg.contains("HTTP 403", ignoreCase = true) ||
+                msg.contains("登录", ignoreCase = true) && (msg.contains("过期") || msg.contains("失效") || msg.contains("未登录") || msg.contains("请先")) ||
+                msg.contains("not login", ignoreCase = true) ||
+                msg.contains("accessToken", ignoreCase = true) && msg.contains("invalid", ignoreCase = true)
+        }
+
+        /**
+         * Builds the official KodCloud Android client User-Agent format observed in production server logs:
+         * `kodCloud-System=Android;AppVersion=6.3;Language=zh_CN`
+         */
+        fun buildKodCloudAppUserAgent(): String {
+            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "6.4" }
+            val locale = Locale.getDefault()
+            val lang = if (locale.country.isNotBlank()) "${locale.language}_${locale.country}" else locale.language.ifBlank { "zh_CN" }
+            return "kodCloud-System=Android;AppVersion=$appVersion;Language=$lang"
+        }
+
+        /**
+         * Builds the Base64-encoded JSON device metadata passed as `HTTP_X_PLATFORM_1`
+         * matching the official KodBox Android client protocol.
+         */
+        fun buildPlatformHeaderPayload(): String {
+            fun esc(s: String): String = s
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", "")
+                .replace("\n", "")
+            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "6.4" }
+            val release = runCatching { Build.VERSION.RELEASE }.getOrNull().orEmpty().ifBlank { "14" }
+            val sdkInt = runCatching { Build.VERSION.SDK_INT }.getOrNull()?.takeIf { it > 0 }?.toString() ?: "34"
+            val brand = runCatching { Build.BRAND }.getOrNull().orEmpty().trim().ifBlank { "Android" }
+            val model = runCatching { Build.MODEL }.getOrNull().orEmpty().trim().ifBlank { "AndroidDevice" }
+            val locale = Locale.getDefault()
+            val lang = if (locale.country.isNotBlank()) "${locale.language}_${locale.country}" else locale.language.ifBlank { "zh_CN" }
+            val json = """{"appVersion":"${esc(appVersion)}","system":"Android ${esc(release)}","Language":"${esc(lang)}","brand":"${esc(brand)}","device":"${esc(model)}","systemVersion":"${esc(sdkInt)}"}"""
+            return json.encodeUtf8().base64()
+        }
+
+        /**
+         * Extracts the configured site name from KodBox init/options responses across versions
+         * (e.g. `data.options.system.systemName` -> "FastCube", `data.system.settings.systemName`,
+         * `data.system.systemName`, `data.options.systemName`, `data.kod.systemName`).
+         */
+        fun extractSiteName(data: JSONObject, fallbackHost: String = ""): String {
+            fun JSONObject?.cleanStr(key: String): String {
+                val raw = this?.optString(key).orEmpty().trim()
+                return if (raw.isBlank() || raw.equals("null", ignoreCase = true)) "" else raw
+            }
+
+            val options = data.optJSONObject("options")
+            val optionsSystem = options?.optJSONObject("system")
+            val system = data.optJSONObject("system")
+            val systemSettings = system?.optJSONObject("settings")
+            val kod = data.optJSONObject("kod")
+            val systemInfo = data.optJSONObject("systemInfo")
+
+            return optionsSystem.cleanStr("systemName")
+                .ifBlank { systemSettings.cleanStr("systemName") }
+                .ifBlank { system.cleanStr("systemName") }
+                .ifBlank { options.cleanStr("systemName") }
+                .ifBlank { kod.cleanStr("systemName") }
+                .ifBlank { systemInfo.cleanStr("systemName") }
+                .ifBlank { data.cleanStr("systemName") }
+                .ifBlank { fallbackHost.trim() }
+                .ifBlank { "网盘" }
+        }
+
+        /**
+         * Checks whether a `user/view/options` or `user/index/init` JSON response contains
+         * an authenticated (non-guest) user profile.
+         */
+        fun hasAuthenticatedUser(json: JSONObject?): Boolean {
+            val data = json?.optJSONObject("data") ?: return false
+            val userObj = data.optJSONObject("user") ?: return false
+            val userInfo = userObj.optJSONObject("info") ?: userObj
+            val userId = userInfo.optString("userID").trim()
+                .ifBlank { userObj.optString("userID").trim() }
+                .ifBlank { userInfo.optString("id").trim() }
+            val name = userInfo.optString("name").trim()
+                .ifBlank { userObj.optString("name").trim() }
+            if (userId == "0" || userId.equals("null", ignoreCase = true)) return false
+            return userId.isNotBlank() || (name.isNotBlank() && !name.equals("null", ignoreCase = true))
+        }
+
+        /**
+         * Builds a standards-compliant mobile browser User-Agent for WebView plugins (OnlyOffice, CAD, EPUB, etc.)
+         * and Media3 streams.
+         */
+        fun buildAndroidUserAgent(): String {
+            val androidVersion = runCatching { Build.VERSION.RELEASE }.getOrNull().orEmpty().ifBlank { "14" }
+            val manufacturer = runCatching { Build.MANUFACTURER }.getOrNull().orEmpty().trim()
+            val model = runCatching { Build.MODEL }.getOrNull().orEmpty().trim()
+            val deviceLabel = when {
+                model.isBlank() -> "Android Device"
+                manufacturer.isNotBlank() && !model.startsWith(manufacturer, ignoreCase = true) -> "$manufacturer $model"
+                else -> model
+            }.replace(Regex("[\\r\\n();]+"), " ").trim().ifBlank { "Android Device" }
+            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "6.4" }
+            return "Mozilla/5.0 (Linux; Android $androidVersion; $deviceLabel) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36 KodNext/$appVersion"
+        }
+    }
+
     val cookieJar = KodSessionCookieJar()
 
     val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .cookieJar(cookieJar)
+        .addInterceptor { chain ->
+            val original = chain.request()
+            val updated = if (original.header("User-Agent").isNullOrBlank()) {
+                original.newBuilder()
+                    .header("User-Agent", buildKodCloudAppUserAgent())
+                    .build()
+            } else {
+                original
+            }
+            chain.proceed(updated)
+        }
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(45, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
@@ -81,7 +217,7 @@ class KodBoxApiClient {
             .addInterceptor { chain ->
                 val original = chain.request()
                 val reqBuilder = original.newBuilder()
-                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36")
+                    .header("User-Agent", buildAndroidUserAgent())
                 if (account != null) {
                     if (account.cookiesHeader.isNotBlank() && original.header("Cookie").isNullOrBlank()) {
                         reqBuilder.header("Cookie", account.cookiesHeader)
@@ -104,36 +240,65 @@ class KodBoxApiClient {
 
     private fun fetchOptionsOrInitJson(
         normalizedUrl: String,
-        explicitToken: String = ""
+        explicitToken: String = "",
+        requireAuthenticatedUser: Boolean = false
     ): Pair<Int, JSONObject?> {
+        val platformEncoded = urlEncode(buildPlatformHeaderPayload())
         val routes = listOf("user/view/options", "user/index/init")
-        var lastHttpCode = 0
-        for (route in routes) {
-            val endpoint = buildString {
-                append("$normalizedUrl/index.php?$route")
+        // Official KodCloud Android client uses POST /?<route>&accessToken=<tok>&HTTP_X_PLATFORM_1=<b64>
+        val candidates = buildList {
+            for (route in routes) {
                 if (explicitToken.isNotBlank()) {
-                    append("&accessToken=")
-                    append(urlEncode(explicitToken))
-                }
-            }
-            val request = Request.Builder()
-                .url(endpoint)
-                .header("Accept", "application/json")
-                .header("X-Requested-With", "XMLHttpRequest")
-                .get()
-                .build()
-            okHttpClient.newCall(request).execute().use { response ->
-                lastHttpCode = response.code
-                val body = response.body?.string().orEmpty()
-                if (response.isSuccessful) {
-                    val json = parseJsonObject(body)
-                    if (json != null && json.optJSONObject("data") != null) {
-                        return response.code to json
-                    }
+                    add(Triple("$normalizedUrl/?$route&accessToken=${urlEncode(explicitToken)}&HTTP_X_PLATFORM_1=$platformEncoded", true, explicitToken))
+                    add(Triple("$normalizedUrl/index.php?$route&accessToken=${urlEncode(explicitToken)}&HTTP_X_PLATFORM_1=$platformEncoded", true, explicitToken))
+                    add(Triple("$normalizedUrl/?$route&accessToken=${urlEncode(explicitToken)}&HTTP_X_PLATFORM_1=$platformEncoded", false, explicitToken))
+                    add(Triple("$normalizedUrl/index.php?$route&accessToken=${urlEncode(explicitToken)}&HTTP_X_PLATFORM_1=$platformEncoded", false, explicitToken))
+                } else {
+                    add(Triple("$normalizedUrl/?$route&HTTP_X_PLATFORM_1=$platformEncoded", false, ""))
+                    add(Triple("$normalizedUrl/index.php?$route&HTTP_X_PLATFORM_1=$platformEncoded", false, ""))
                 }
             }
         }
-        return lastHttpCode to null
+
+        var lastHttpCode = 0
+        var fallbackJson: JSONObject? = null
+        var fallbackCode = 0
+        for ((endpoint, isPost, tokenParam) in candidates) {
+            val reqBuilder = Request.Builder()
+                .url(endpoint)
+                .header("Accept", "application/json")
+                .header("X-Requested-With", "XMLHttpRequest")
+            val request = if (isPost) {
+                val form = FormBody.Builder()
+                if (tokenParam.isNotBlank()) {
+                    form.add("accessToken", tokenParam)
+                }
+                reqBuilder.post(form.build()).build()
+            } else {
+                reqBuilder.get().build()
+            }
+            val result = runCatching {
+                okHttpClient.newCall(request).execute().use { response ->
+                    lastHttpCode = response.code
+                    val body = response.body?.string().orEmpty()
+                    if (response.isSuccessful) {
+                        val json = parseJsonObject(body)
+                        if (json != null && json.optJSONObject("data") != null) {
+                            if (fallbackJson == null) {
+                                fallbackJson = json
+                                fallbackCode = response.code
+                            }
+                            if (!requireAuthenticatedUser || hasAuthenticatedUser(json)) {
+                                return@use response.code to json
+                            }
+                        }
+                    }
+                    null
+                }
+            }.getOrNull()
+            if (result != null) return result
+        }
+        return if (fallbackJson != null) fallbackCode to fallbackJson else lastHttpCode to null
     }
 
     suspend fun probeServer(rawUrl: String): Result<ServerProbeInfo> = withContext(Dispatchers.IO) {
@@ -141,7 +306,7 @@ class KodBoxApiClient {
             return@withContext Result.failure(it)
         }
         runCatching {
-            val (httpCode, json) = fetchOptionsOrInitJson(normalized)
+            val (httpCode, json) = fetchOptionsOrInitJson(normalized, requireAuthenticatedUser = false)
             if (httpCode !in 200..299 && json == null) {
                 return@runCatching ServerProbeInfo(
                     normalizedUrl = normalized,
@@ -153,7 +318,7 @@ class KodBoxApiClient {
                 return@runCatching ServerProbeInfo(
                     normalizedUrl = normalized,
                     reachable = false,
-                    errorMessage = "目标地址响应非 KodBox JSON 格式，请确认填写的是 KodBox 根目录"
+                    errorMessage = "目标地址响应非网盘 JSON 格式，请确认填写的是网盘根目录"
                 )
             }
             val data = json.optJSONObject("data") ?: JSONObject()
@@ -161,6 +326,7 @@ class KodBoxApiClient {
             val system = data.optJSONObject("system") ?: JSONObject()
             val settings = system.optJSONObject("settings") ?: JSONObject()
             val options = data.optJSONObject("options") ?: JSONObject()
+            val optionsSystem = options.optJSONObject("system") ?: JSONObject()
             val host = normalized.toHttpUrlOrNull()?.host.orEmpty()
             val csrf = cookieJar.getCsrfToken(host)
                 .ifBlank { data.optString("CSRF_TOKEN") }
@@ -168,16 +334,16 @@ class KodBoxApiClient {
 
             val needCheckCode = settings.optInt("needCheckCode", 0) == 1 ||
                 settings.optBoolean("needCheckCode", false) ||
+                optionsSystem.optInt("needCheckCode", 0) == 1 ||
+                optionsSystem.optBoolean("needCheckCode", false) ||
                 options.optInt("needCheckCode", 0) == 1 ||
                 options.optBoolean("needCheckCode", false) ||
                 data.optInt("needCheckCode", 0) == 1
 
-            val siteName = settings.optString("systemName")
-                .ifBlank { options.optString("systemName") }
-                .ifBlank { kod.optString("systemName") }
-                .ifBlank { "KodBox" }
+            val siteName = extractSiteName(data, host)
             val version = kod.optString("version")
                 .ifBlank { options.optString("version") }
+                .ifBlank { optionsSystem.optString("version") }
 
             ServerProbeInfo(
                 normalizedUrl = normalized,
@@ -238,8 +404,9 @@ class KodBoxApiClient {
                 formBuilder.add("CSRF_TOKEN", csrf)
             }
 
+            val platformEncoded = urlEncode(buildPlatformHeaderPayload())
             val loginReq = Request.Builder()
-                .url("$normalized/index.php?user/index/loginSubmit")
+                .url("$normalized/?user/index/loginSubmit&HTTP_X_PLATFORM_1=$platformEncoded")
                 .header("Accept", "application/json")
                 .header("X-Requested-With", "XMLHttpRequest")
                 .apply {
@@ -255,23 +422,27 @@ class KodBoxApiClient {
                     error("登录请求失败 (HTTP ${resp.code})")
                 }
                 val json = parseJsonObject(rawBody)
-                    ?: error("服务器返回了非预期响应，请确认 KodBox 地址是否正确")
+                    ?: error("服务器返回了非预期响应，请确认网盘地址是否正确")
                 val codeOk = isKodSuccess(json)
                 if (!codeOk) {
                     val errText = extractKodError(json, "登录失败，请检查账号或密码")
                     error(errText)
                 }
-                val dataObj = json.optJSONObject("data")
-                loginToken = dataObj?.optString("accessToken").orEmpty()
-                    .ifBlank { json.optString("info") }
+                loginToken = extractTokenFromJson(json)
             }
 
-            // Step 3: Fetch full workspace & user profile via user/index/init
-            fetchInitAccount(
+            // Step 3: Fetch full workspace & user profile via user/view/options or user/index/init
+            val account = fetchInitAccount(
                 normalizedUrl = normalized,
                 fallbackUsername = username.trim(),
                 explicitToken = loginToken
             )
+            val probedSite = probe?.siteName.orEmpty().trim()
+            if (probedSite.isNotBlank() && probedSite != host && (account.siteName == host || account.siteName == "网盘" || account.siteName == "我的网盘")) {
+                account.copy(siteName = probedSite)
+            } else {
+                account
+            }
         }
     }
 
@@ -284,15 +455,291 @@ class KodBoxApiClient {
         }
         val cleanToken = accessToken.trim()
         if (cleanToken.isEmpty()) {
-            return@withContext Result.failure(IllegalArgumentException("请输入有效的 AccessToken"))
+            return@withContext Result.failure(IllegalArgumentException("请输入有效的登录凭证"))
         }
         runCatching {
+            // 1. Direct official Android accessToken verification (POST /?user/view/options&accessToken=...&HTTP_X_PLATFORM_1=...)
+            val directAttempt = runCatching {
+                fetchInitAccount(
+                    normalizedUrl = normalized,
+                    fallbackUsername = "qr_user",
+                    explicitToken = cleanToken
+                )
+            }
+            if (directAttempt.isSuccess) {
+                return@runCatching directAttempt.getOrThrow()
+            }
+
+            // 2. If QR carried a short-lived loginToken / web QR token, exchange it for session + accessToken
+            val exchangedToken = exchangeLoginTokenForAccessToken(normalized, cleanToken)
             fetchInitAccount(
                 normalizedUrl = normalized,
-                fallbackUsername = "token_user",
-                explicitToken = cleanToken
+                fallbackUsername = "qr_user",
+                explicitToken = exchangedToken.ifBlank { cleanToken }
             )
         }
+    }
+
+    /**
+     * Handles dynamic QR login callback URLs (e.g. `?user/index/qrcode&...`, `?user/view/call&...`,
+     * short links, or signed routes) by trying GET and POST with official Android client headers,
+     * harvesting tokens from redirects, JSON, HTML/JS scripts, or session cookies, and hydrating the account.
+     */
+    suspend fun loginWithQrUrl(
+        rawServerUrl: String,
+        qrUrl: String
+    ): Result<KodAccount> = withContext(Dispatchers.IO) {
+        val normalized = KodFormatters.normalizeServerUrl(rawServerUrl).getOrElse {
+            return@withContext Result.failure(it)
+        }
+        runCatching {
+            val platformEncoded = urlEncode(buildPlatformHeaderPayload())
+            val targetUrl = if (qrUrl.contains("HTTP_X_PLATFORM_1", ignoreCase = true)) {
+                qrUrl
+            } else {
+                val sep = if (qrUrl.contains("?")) "&" else "?"
+                "$qrUrl${sep}HTTP_X_PLATFORM_1=$platformEncoded"
+            }
+
+            var extractedToken = ""
+            var serverHintError: String? = null
+            val methods = listOf(false, true) // Try GET first, then POST if still unauthenticated
+
+            for (usePost in methods) {
+                val reqBuilder = Request.Builder()
+                    .url(targetUrl)
+                    .header("Accept", "application/json, text/html, */*")
+                    .header("X-Requested-With", "XMLHttpRequest")
+                val req = if (usePost) {
+                    reqBuilder.post(FormBody.Builder().build()).build()
+                } else {
+                    reqBuilder.get().build()
+                }
+
+                val accountFound = runCatching {
+                    okHttpClient.newCall(req).execute().use { resp ->
+                        val finalUrlStr = resp.request.url.toString()
+                        val parsedFinal = KodQrLoginParser.parse(finalUrlStr)
+                        if (parsedFinal is KodQrPayload.TokenLogin) {
+                            extractedToken = parsedFinal.accessToken
+                        }
+
+                        val body = resp.body?.string().orEmpty()
+                        val json = parseJsonObject(body)
+                        if (json != null) {
+                            extractedToken = extractTokenFromJson(json).ifBlank { extractedToken }
+                            if (hasAuthenticatedUser(json)) {
+                                return@use buildAccountFromInitJson(
+                                    normalizedUrl = normalized,
+                                    json = json,
+                                    fallbackUsername = "qr_user",
+                                    explicitToken = extractedToken
+                                )
+                            }
+                            if (!isKodSuccess(json)) {
+                                val msg = extractKodError(json, "")
+                                if (msg.isNotBlank() && serverHintError == null) serverHintError = msg
+                            }
+                        } else if (body.isNotBlank()) {
+                            extractedToken = extractTokenFromHtmlOrText(body).ifBlank { extractedToken }
+                        }
+                        null
+                    }
+                }.getOrNull()
+
+                if (accountFound != null) return@runCatching accountFound
+                if (extractedToken.isNotBlank()) break
+            }
+
+            if (extractedToken.isNotBlank()) {
+                return@runCatching loginWithToken(normalized, extractedToken).getOrThrow()
+            }
+
+            // Fallback: session cookie may have been set by visiting the QR callback URL
+            runCatching {
+                fetchInitAccount(
+                    normalizedUrl = normalized,
+                    fallbackUsername = "qr_user",
+                    explicitToken = ""
+                )
+            }.getOrElse {
+                error(serverHintError ?: "该二维码未返回有效登录凭证或已过期")
+            }
+        }
+    }
+
+    /**
+     * Authorizes a PC Web QR login session when an already signed-in mobile user scans
+     * a same-server web QR code from the Me tab.
+     */
+    suspend fun confirmWebQrLogin(
+        account: KodAccount,
+        qrUrl: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        hydrateAccountSession(account)
+        runCatching {
+            val platformEncoded = urlEncode(buildPlatformHeaderPayload())
+            val sep = if (qrUrl.contains("?")) "&" else "?"
+            val withToken = buildString {
+                append(qrUrl)
+                if (account.accessToken.isNotBlank() && !qrUrl.contains("accessToken=", ignoreCase = true)) {
+                    append(sep).append("accessToken=").append(urlEncode(account.accessToken))
+                }
+                if (!qrUrl.contains("HTTP_X_PLATFORM_1", ignoreCase = true)) {
+                    append(if (contains("?")) "&" else "?").append("HTTP_X_PLATFORM_1=").append(platformEncoded)
+                }
+            }
+            val req = Request.Builder()
+                .url(withToken)
+                .header("Accept", "application/json, text/html, */*")
+                .header("X-Requested-With", "XMLHttpRequest")
+                .apply {
+                    if (account.csrfToken.isNotBlank()) header("CSRF-Token", account.csrfToken)
+                }
+                .post(
+                    FormBody.Builder().apply {
+                        if (account.accessToken.isNotBlank()) add("accessToken", account.accessToken)
+                        if (account.csrfToken.isNotBlank()) add("CSRF_TOKEN", account.csrfToken)
+                    }.build()
+                )
+                .build()
+
+            okHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) error("确认授权失败 (HTTP ${resp.code})")
+                val body = resp.body?.string().orEmpty()
+                val json = parseJsonObject(body)
+                if (json != null && isKodSuccess(json)) {
+                    json.optString("info").takeIf { it.isNotBlank() && !it.equals("null", true) }
+                        ?: "已确认网页端扫码授权"
+                } else {
+                    error(json?.let { extractKodError(it, "未能确认网页端授权") } ?: "该二维码不是网页端授权码")
+                }
+            }
+        }
+    }
+
+    private fun extractTokenFromHtmlOrText(body: String): String {
+        val patterns = listOf(
+            Regex("""["']accessToken["']\s*[:=]\s*["']([A-Za-z0-9_\-+=/.]{16,})["']"""),
+            Regex("""["']loginToken["']\s*[:=]\s*["']([A-Za-z0-9_\-+=/.]{16,})["']"""),
+            Regex("""["']kodToken["']\s*[:=]\s*["']([A-Za-z0-9_\-+=/.]{16,})["']"""),
+            Regex("""accessToken=([A-Za-z0-9_\-+%.]{16,})"""),
+            Regex("""loginToken=([A-Za-z0-9_\-+%.]{16,})""")
+        )
+        for (regex in patterns) {
+            val match = regex.find(body)?.groupValues?.getOrNull(1)?.trim()
+            if (!match.isNullOrBlank()) {
+                return KodQrLoginParser.percentDecodePreservePlus(match)
+            }
+        }
+        return ""
+    }
+
+    private fun exchangeLoginTokenForAccessToken(normalizedUrl: String, rawToken: String): String {
+        val platformEncoded = urlEncode(buildPlatformHeaderPayload())
+        val host = normalizedUrl.toHttpUrlOrNull()?.host.orEmpty()
+        val csrf = cookieJar.getCsrfToken(host)
+        val encodedTok = urlEncode(rawToken)
+
+        val exchangeAttempts = listOf(
+            // Standard loginSubmit with loginToken (POST)
+            Triple(
+                "$normalizedUrl/?user/index/loginSubmit&HTTP_X_PLATFORM_1=$platformEncoded",
+                true,
+                mapOf(
+                    "loginToken" to rawToken,
+                    "token" to rawToken,
+                    "rememberPassword" to "1",
+                    "salt" to "0",
+                    "API_ROUTE" to "user/index/loginSubmit"
+                )
+            ),
+            // accessToken exchange endpoint (POST)
+            Triple(
+                "$normalizedUrl/?user/index/accessToken&HTTP_X_PLATFORM_1=$platformEncoded",
+                true,
+                mapOf("token" to rawToken, "accessToken" to rawToken)
+            ),
+            // loginToken direct route (POST & GET)
+            Triple(
+                "$normalizedUrl/?user/index/loginToken&token=$encodedTok&HTTP_X_PLATFORM_1=$platformEncoded",
+                true,
+                mapOf("token" to rawToken, "loginToken" to rawToken)
+            ),
+            Triple(
+                "$normalizedUrl/?user/index/loginToken&token=$encodedTok&HTTP_X_PLATFORM_1=$platformEncoded",
+                false,
+                emptyMap()
+            ),
+            // SSO token login route (GET)
+            Triple(
+                "$normalizedUrl/?user/sso/login&token=$encodedTok&HTTP_X_PLATFORM_1=$platformEncoded",
+                false,
+                emptyMap()
+            )
+        )
+
+        for ((endpoint, isPost, formMap) in exchangeAttempts) {
+            val reqBuilder = Request.Builder()
+                .url(endpoint)
+                .header("Accept", "application/json")
+                .header("X-Requested-With", "XMLHttpRequest")
+                .apply { if (csrf.isNotBlank()) header("CSRF-Token", csrf) }
+
+            val req = if (isPost) {
+                val formBuilder = FormBody.Builder()
+                formMap.forEach { (k, v) -> formBuilder.add(k, v) }
+                if (csrf.isNotBlank()) formBuilder.add("CSRF_TOKEN", csrf)
+                reqBuilder.post(formBuilder.build()).build()
+            } else {
+                reqBuilder.get().build()
+            }
+
+            val tokenFound = runCatching {
+                okHttpClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use ""
+                    val body = resp.body?.string().orEmpty()
+                    val json = parseJsonObject(body) ?: return@use extractTokenFromHtmlOrText(body)
+                    extractTokenFromJson(json)
+                }
+            }.getOrDefault("")
+
+            if (tokenFound.isNotBlank()) return tokenFound
+        }
+        return ""
+    }
+
+    private fun extractTokenFromJson(json: JSONObject): String {
+        val dataObj = json.optJSONObject("data")
+        val fromObj = dataObj?.optString("accessToken").orEmpty()
+            .ifBlank { dataObj?.optString("access_token").orEmpty() }
+            .ifBlank { dataObj?.optString("loginToken").orEmpty() }
+            .ifBlank { dataObj?.optString("login_token").orEmpty() }
+            .ifBlank { dataObj?.optString("token").orEmpty() }
+            .ifBlank { dataObj?.optJSONObject("kod")?.optString("accessToken").orEmpty() }
+            .ifBlank { json.optString("accessToken") }
+            .ifBlank { json.optString("access_token") }
+        if (fromObj.isNotBlank() && !fromObj.equals("null", true)) return fromObj
+
+        // Check nested redirect URL inside data.url or data.link
+        val nestedUrl = dataObj?.optString("url").orEmpty().ifBlank { dataObj?.optString("link").orEmpty() }
+        if (nestedUrl.startsWith("http://", true) || nestedUrl.startsWith("https://", true)) {
+            val parsed = KodQrLoginParser.parse(nestedUrl)
+            if (parsed is KodQrPayload.TokenLogin) return parsed.accessToken
+        }
+
+        // Some endpoints return the token directly as string in `data` or `info` when `code == true`
+        if (isKodSuccess(json)) {
+            val dataStr = json.optString("data").trim()
+            if (dataStr.length >= 16 && !dataStr.startsWith("{") && !dataStr.startsWith("[") && !dataStr.contains(" ")) {
+                return dataStr
+            }
+            val infoStr = json.optString("info").trim()
+            if (infoStr.length >= 16 && !infoStr.startsWith("{") && !infoStr.contains(" ")) {
+                return infoStr
+            }
+        }
+        return ""
     }
 
     suspend fun refreshAccountInfo(account: KodAccount): Result<KodAccount> = withContext(Dispatchers.IO) {
@@ -313,10 +760,30 @@ class KodBoxApiClient {
         explicitToken: String,
         existingId: String? = null
     ): KodAccount {
-        val (httpCode, json) = fetchOptionsOrInitJson(normalizedUrl, explicitToken)
+        val (httpCode, json) = fetchOptionsOrInitJson(
+            normalizedUrl = normalizedUrl,
+            explicitToken = explicitToken,
+            requireAuthenticatedUser = true
+        )
         if (json == null) {
-            error(if (httpCode in 200..299) "无法解析 KodBox 初始化响应" else "获取用户信息失败 (HTTP $httpCode)")
+            error(if (httpCode in 200..299) "无法解析网盘初始化响应" else "获取用户信息失败 (HTTP $httpCode)")
         }
+        return buildAccountFromInitJson(
+            normalizedUrl = normalizedUrl,
+            json = json,
+            fallbackUsername = fallbackUsername,
+            explicitToken = explicitToken,
+            existingId = existingId
+        )
+    }
+
+    private fun buildAccountFromInitJson(
+        normalizedUrl: String,
+        json: JSONObject,
+        fallbackUsername: String,
+        explicitToken: String,
+        existingId: String? = null
+    ): KodAccount {
         val data = json.optJSONObject("data") ?: error(extractKodError(json, "未能读取用户信息"))
         val userObj = data.optJSONObject("user")
         // KodBox 1.71 nests profile under data.user.info while older builds put fields directly on data.user
@@ -328,7 +795,7 @@ class KodBoxApiClient {
             .ifBlank { userObj?.optString("name").orEmpty() }
 
         if (userInfo == null || (userId.isBlank() && name.isBlank()) || userId == "0") {
-            error("会话未生效或 AccessToken 无效，请重新登录")
+            error("会话未生效或二维码凭证已失效，请重新获取二维码或使用账号密码登录")
         }
 
         val host = normalizedUrl.toHttpUrlOrNull()?.host.orEmpty()
@@ -363,13 +830,11 @@ class KodBoxApiClient {
             else -> "{block:files}/"
         }
 
-        val systemSettings = data.optJSONObject("system")?.optJSONObject("settings")
         val options = data.optJSONObject("options")
-        val siteName = systemSettings?.optString("systemName").orEmpty()
-            .ifBlank { options?.optString("systemName").orEmpty() }
-            .ifBlank { kodInfo?.optString("systemName").orEmpty() }
-            .ifBlank { "KodBox" }
+        val siteName = extractSiteName(data, host)
         val version = kodInfo?.optString("version").orEmpty()
+            .ifBlank { options?.optString("version").orEmpty() }
+            .ifBlank { options?.optJSONObject("system")?.optString("version").orEmpty() }
 
         val sizeUse = userInfo.optLongSafe("sizeUse")
         // KodBox stores sizeMax in GB (e.g., 20 = 20GB) or bytes depending on endpoint
@@ -708,8 +1173,9 @@ class KodBoxApiClient {
     }
 
     suspend fun listTags(account: KodAccount): Result<List<KodTag>> = withContext(Dispatchers.IO) {
+        hydrateAccountSession(account)
         runCatching {
-            val json = executeKodGet(account, "user/userTag/get", emptyMap())
+            val json = executeKodGet(account, "explorer/tag/get", emptyMap())
             if (!isKodSuccess(json)) return@runCatching emptyList()
             val arr = json.optJSONArray("data") ?: return@runCatching emptyList()
             parseTagList(arr)
@@ -717,20 +1183,29 @@ class KodBoxApiClient {
     }
 
     suspend fun createTag(account: KodAccount, name: String, style: String): Result<Unit> = withContext(Dispatchers.IO) {
+        hydrateAccountSession(account)
         runCatching {
+            val cleanName = name.trim()
+            if (cleanName.isEmpty()) error("标签名称不能为空")
             val json = executeKodPost(
                 account = account,
-                route = "user/userTag/add",
-                params = mapOf("name" to name.trim(), "style" to style)
+                route = "explorer/tag/add",
+                params = mapOf(
+                    "name" to cleanName,
+                    "style" to style.ifBlank { "label-blue-normal" }
+                )
             )
             if (!isKodSuccess(json)) error(extractKodError(json, "创建标签失败"))
         }
     }
 
     suspend fun setItemTag(account: KodAccount, item: KodFileItem, tagId: String, add: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
+        hydrateAccountSession(account)
         runCatching {
-            val route = if (add) "explorer/userTag/filesAddToTag" else "explorer/userTag/filesRemoveFromTag"
-            val filesParam = item.sourceId.ifBlank { item.path }
+            val route = if (add) "explorer/tag/filesAddToTag" else "explorer/tag/filesRemoveFromTag"
+            val filesParam = item.sourceId.ifBlank {
+                item.path.trimEnd('/').replace(",", "__*@*__")
+            }
             val json = executeKodPost(
                 account = account,
                 route = route,
@@ -1034,54 +1509,185 @@ class KodBoxApiClient {
     ): Result<Unit> = withContext(Dispatchers.IO) {
         hydrateAccountSession(account)
         runCatching {
+            val (totalChunks, chunkSize) = computeChunkPlan(totalBytes)
             val url = buildAuthenticatedUrl(account, "explorer/index/fileUpload", emptyMap())
-            val progressBody = object : RequestBody() {
-                override fun contentType(): MediaType? = mimeType.toMediaTypeOrNull()
-                override fun contentLength(): Long = if (totalBytes > 0L) totalBytes else -1L
-                override fun writeTo(sink: BufferedSink) {
-                    val stream = inputStreamProvider() ?: error("无法读取本地文件流")
-                    stream.use { input ->
-                        val buffer = ByteArray(16 * 1024)
-                        var uploaded = 0L
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read == -1) break
-                            sink.write(buffer, 0, read)
-                            uploaded += read
-                            onProgress(uploaded, totalBytes)
-                        }
+
+            if (totalChunks <= 1) {
+                uploadSingleRequest(
+                    account = account,
+                    url = url,
+                    targetDir = targetDir,
+                    fileName = fileName,
+                    mimeType = mimeType,
+                    inputStreamProvider = inputStreamProvider,
+                    totalBytes = totalBytes,
+                    onProgress = onProgress
+                )
+            } else {
+                uploadChunkedRequests(
+                    account = account,
+                    url = url,
+                    targetDir = targetDir,
+                    fileName = fileName,
+                    mimeType = mimeType,
+                    inputStreamProvider = inputStreamProvider,
+                    totalBytes = totalBytes,
+                    totalChunks = totalChunks,
+                    chunkSize = chunkSize,
+                    onProgress = onProgress
+                )
+            }
+        }
+    }
+
+    private fun uploadSingleRequest(
+        account: KodAccount,
+        url: String,
+        targetDir: String,
+        fileName: String,
+        mimeType: String,
+        inputStreamProvider: () -> InputStream?,
+        totalBytes: Long,
+        onProgress: (bytesWritten: Long, total: Long) -> Unit
+    ) {
+        val progressBody = object : RequestBody() {
+            override fun contentType(): MediaType? = mimeType.toMediaTypeOrNull()
+            override fun contentLength(): Long = if (totalBytes > 0L) totalBytes else -1L
+            override fun writeTo(sink: BufferedSink) {
+                val stream = inputStreamProvider() ?: error("无法读取本地文件流")
+                stream.use { input ->
+                    val buffer = ByteArray(16 * 1024)
+                    var uploaded = 0L
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read == -1) break
+                        sink.write(buffer, 0, read)
+                        uploaded += read
+                        onProgress(uploaded, totalBytes)
                     }
                 }
             }
+        }
 
-            val multipartBuilder = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart("path", targetDir)
-                .addFormDataPart("name", fileName)
-                .addFormDataPart("chunks", "1")
-                .addFormDataPart("chunk", "0")
-                .addFormDataPart("size", totalBytes.coerceAtLeast(0L).toString())
-                .addFormDataPart("file", fileName, progressBody)
+        val multipartBuilder = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("path", targetDir)
+            .addFormDataPart("name", fileName)
+            .addFormDataPart("chunks", "1")
+            .addFormDataPart("chunk", "0")
+            .addFormDataPart("size", totalBytes.coerceAtLeast(0L).toString())
+            .addFormDataPart("file", fileName, progressBody)
 
-            if (account.csrfToken.isNotBlank()) {
-                multipartBuilder.addFormDataPart("CSRF_TOKEN", account.csrfToken)
+        appendUploadAuthFields(multipartBuilder, account)
+
+        val req = buildAuthedRequestBuilder(account, url)
+            .post(multipartBuilder.build())
+            .build()
+
+        okHttpClient.newCall(req).execute().use { resp ->
+            val rawBody = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) error("上传失败 (HTTP ${resp.code})")
+            val json = parseJsonObject(rawBody)
+            if (json != null && !isKodSuccess(json)) {
+                error(extractKodError(json, "服务器拒绝上传"))
             }
-            if (account.accessToken.isNotBlank()) {
-                multipartBuilder.addFormDataPart("accessToken", account.accessToken)
-            }
+        }
+    }
 
-            val req = buildAuthedRequestBuilder(account, url)
-                .post(multipartBuilder.build())
-                .build()
+    private fun uploadChunkedRequests(
+        account: KodAccount,
+        url: String,
+        targetDir: String,
+        fileName: String,
+        mimeType: String,
+        inputStreamProvider: () -> InputStream?,
+        totalBytes: Long,
+        totalChunks: Int,
+        chunkSize: Long,
+        onProgress: (bytesWritten: Long, total: Long) -> Unit
+    ) {
+        val stream = inputStreamProvider() ?: error("无法读取本地文件流")
+        val chunkBuffer = ByteArray(chunkSize.toInt())
+        var uploadedBeforeChunk = 0L
 
-            okHttpClient.newCall(req).execute().use { resp ->
-                val rawBody = resp.body?.string().orEmpty()
-                if (!resp.isSuccessful) error("上传失败 (HTTP ${resp.code})")
-                val json = parseJsonObject(rawBody)
-                if (json != null && !isKodSuccess(json)) {
-                    error(extractKodError(json, "服务器拒绝上传"))
+        stream.use { input ->
+            for (chunkIndex in 0 until totalChunks) {
+                var filled = 0
+                while (filled < chunkBuffer.size) {
+                    val read = input.read(chunkBuffer, filled, chunkBuffer.size - filled)
+                    if (read == -1) break
+                    filled += read
                 }
+                if (filled <= 0) break
+
+                val chunkBytes = if (filled == chunkBuffer.size) chunkBuffer else chunkBuffer.copyOf(filled)
+                var lastError: Throwable? = null
+                var succeeded = false
+
+                for (attempt in 0..2) {
+                    try {
+                        val baseOffset = uploadedBeforeChunk
+                        val chunkBody = object : RequestBody() {
+                            override fun contentType(): MediaType? = mimeType.toMediaTypeOrNull()
+                            override fun contentLength(): Long = chunkBytes.size.toLong()
+                            override fun writeTo(sink: BufferedSink) {
+                                var offset = 0
+                                val step = 16 * 1024
+                                while (offset < chunkBytes.size) {
+                                    val count = minOf(step, chunkBytes.size - offset)
+                                    sink.write(chunkBytes, offset, count)
+                                    offset += count
+                                    onProgress(baseOffset + offset, totalBytes)
+                                }
+                            }
+                        }
+
+                        val multipartBuilder = MultipartBody.Builder()
+                            .setType(MultipartBody.FORM)
+                            .addFormDataPart("path", targetDir)
+                            .addFormDataPart("name", fileName)
+                            .addFormDataPart("chunks", totalChunks.toString())
+                            .addFormDataPart("chunk", chunkIndex.toString())
+                            .addFormDataPart("chunkSize", chunkSize.toString())
+                            .addFormDataPart("size", totalBytes.toString())
+                            .addFormDataPart("file", fileName, chunkBody)
+
+                        appendUploadAuthFields(multipartBuilder, account)
+
+                        val req = buildAuthedRequestBuilder(account, url)
+                            .post(multipartBuilder.build())
+                            .build()
+
+                        okHttpClient.newCall(req).execute().use { resp ->
+                            val rawBody = resp.body?.string().orEmpty()
+                            if (!resp.isSuccessful) error("分片上传失败 (${chunkIndex + 1}/$totalChunks, HTTP ${resp.code})")
+                            val json = parseJsonObject(rawBody)
+                            if (json != null && !isKodSuccess(json)) {
+                                error(extractKodError(json, "服务器拒绝分片 (${chunkIndex + 1}/$totalChunks)"))
+                            }
+                        }
+                        succeeded = true
+                        break
+                    } catch (e: Throwable) {
+                        lastError = e
+                        if (isAuthFailure(e) || attempt == 2) break
+                    }
+                }
+                if (!succeeded) {
+                    throw lastError ?: IllegalStateException("分片上传失败 (${chunkIndex + 1}/$totalChunks)")
+                }
+                uploadedBeforeChunk += filled
+                onProgress(uploadedBeforeChunk, totalBytes)
             }
+        }
+    }
+
+    private fun appendUploadAuthFields(builder: MultipartBody.Builder, account: KodAccount) {
+        if (account.csrfToken.isNotBlank()) {
+            builder.addFormDataPart("CSRF_TOKEN", account.csrfToken)
+        }
+        if (account.accessToken.isNotBlank()) {
+            builder.addFormDataPart("accessToken", account.accessToken)
         }
     }
 
@@ -1098,16 +1704,47 @@ class KodBoxApiClient {
                 route = "explorer/index/fileDownload",
                 params = mapOf("path" to item.path)
             )
-            val req = buildAuthedRequestBuilder(account, url).get().build()
+            destinationFile.parentFile?.mkdirs()
+            val partFile = File(destinationFile.parentFile, "${destinationFile.name}.part")
+            val existingBytes = if (partFile.exists() && partFile.isFile) partFile.length() else 0L
+            val canResume = existingBytes > 0L && (item.size <= 0L || existingBytes < item.size)
+
+            val reqBuilder = buildAuthedRequestBuilder(account, url).get()
+            if (canResume) {
+                reqBuilder.header("Range", "bytes=$existingBytes-")
+            }
+            val req = reqBuilder.build()
+
             okHttpClient.newCall(req).execute().use { resp ->
+                if (resp.code == 416 && partFile.exists() && partFile.length() > 0L) {
+                    // Already fully downloaded in .part file
+                    if (destinationFile.exists()) destinationFile.delete()
+                    if (!partFile.renameTo(destinationFile)) {
+                        partFile.copyTo(destinationFile, overwrite = true)
+                        partFile.delete()
+                    }
+                    onProgress(destinationFile.length(), destinationFile.length())
+                    return@runCatching destinationFile
+                }
                 if (!resp.isSuccessful) error("下载失败 (HTTP ${resp.code})")
                 val body = resp.body ?: error("响应体为空")
-                val expectedTotal = body.contentLength().takeIf { it > 0L } ?: item.size
-                destinationFile.parentFile?.mkdirs()
+                val isPartial = resp.code == 206 && canResume
+                val startOffset = if (isPartial) existingBytes else 0L
+                val responseLen = body.contentLength()
+                val expectedTotal = when {
+                    isPartial && responseLen > 0L -> startOffset + responseLen
+                    responseLen > 0L -> responseLen
+                    else -> item.size
+                }
+
+                if (startOffset > 0L) {
+                    onProgress(startOffset, expectedTotal)
+                }
+
                 body.byteStream().use { input ->
-                    FileOutputStream(destinationFile).use { output ->
+                    FileOutputStream(partFile, isPartial).use { output ->
                         val buffer = ByteArray(16 * 1024)
-                        var downloaded = 0L
+                        var downloaded = startOffset
                         while (true) {
                             val read = input.read(buffer)
                             if (read == -1) break
@@ -1117,6 +1754,11 @@ class KodBoxApiClient {
                         }
                         output.flush()
                     }
+                }
+                if (destinationFile.exists()) destinationFile.delete()
+                if (!partFile.renameTo(destinationFile)) {
+                    partFile.copyTo(destinationFile, overwrite = true)
+                    partFile.delete()
                 }
                 destinationFile
             }
@@ -1266,13 +1908,14 @@ class KodBoxApiClient {
     }
 
     private fun buildAuthenticatedUrl(account: KodAccount, route: String, params: Map<String, String>): String {
-        val sb = StringBuilder("${account.serverUrl}/index.php?$route")
+        val sb = StringBuilder("${account.serverUrl}/?$route")
         params.forEach { (k, v) ->
             sb.append('&').append(urlEncode(k)).append('=').append(urlEncode(v))
         }
         if (account.accessToken.isNotBlank() && !params.containsKey("accessToken")) {
             sb.append("&accessToken=").append(urlEncode(account.accessToken))
         }
+        sb.append("&HTTP_X_PLATFORM_1=").append(urlEncode(buildPlatformHeaderPayload()))
         return sb.toString()
     }
 
@@ -1328,6 +1971,10 @@ class KodBoxApiClient {
             val ownerName = createUser?.optString("nickName").orEmpty()
                 .ifBlank { createUser?.optString("name").orEmpty() }
                 .ifBlank { obj.optString("owner") }
+            val childCount = (obj.optInt("hasFolder", 0) + obj.optInt("hasFile", 0))
+                .takeIf { it > 0 }
+                ?: obj.optInt("childrenCount", 0).takeIf { it > 0 }
+                ?: obj.optInt("fileCount", 0)
 
             into.add(
                 KodFileItem(
@@ -1349,7 +1996,7 @@ class KodBoxApiClient {
                     isReadable = obj.optInt("isReadable", 1) != 0,
                     isWriteable = obj.optInt("isWriteable", 1) != 0,
                     isRecycleItem = isRecycle || obj.optInt("isDelete", 0) == 1,
-                    childCount = obj.optInt("hasFolder", 0) + obj.optInt("hasFile", 0)
+                    childCount = childCount
                 )
             )
         }

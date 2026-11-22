@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.kodnext.vkmrzp"
     minSdk = 24
     targetSdk = 36
-    versionCode = 4
-    versionName = "4.0"
+    versionCode = 10
+    versionName = "6.4"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -87,10 +87,10 @@ dependencies {
   // implementation(platform(libs.firebase.bom))
   // implementation(libs.accompanist.permissions)
   implementation(libs.androidx.activity.compose)
-  // implementation(libs.androidx.camera.camera2)
-  // implementation(libs.androidx.camera.core)
-  // implementation(libs.androidx.camera.lifecycle)
-  // implementation(libs.androidx.camera.view)
+  implementation(libs.androidx.camera.camera2)
+  implementation(libs.androidx.camera.core)
+  implementation(libs.androidx.camera.lifecycle)
+  implementation(libs.androidx.camera.view)
   implementation(libs.androidx.compose.material.icons.core)
   implementation(libs.androidx.compose.material.icons.extended)
   implementation(libs.androidx.compose.material3)
@@ -108,8 +108,8 @@ dependencies {
   implementation(libs.androidx.media3.exoplayer)
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.datasource.okhttp)
-  // implementation(libs.androidx.room.ktx)
-  // implementation(libs.androidx.room.runtime)
+  implementation(libs.androidx.room.ktx)
+  implementation(libs.androidx.room.runtime)
   implementation(libs.coil.compose)
   // implementation(libs.converter.moshi)
   // implementation(libs.firebase.ai)
@@ -129,6 +129,7 @@ dependencies {
   // implementation(libs.logging.interceptor)
   // implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
+  implementation(libs.zxing.core)
   // implementation(libs.play.services.location)
   // implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
@@ -144,6 +145,6 @@ dependencies {
   androidTestImplementation(libs.androidx.runner)
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
-  // "ksp"(libs.androidx.room.compiler)
+  "ksp"(libs.androidx.room.compiler)
   // "ksp"(libs.moshi.kotlin.codegen)
 }

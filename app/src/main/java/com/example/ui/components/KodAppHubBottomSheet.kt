@@ -1,8 +1,6 @@
 package com.example.ui.components
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,30 +12,24 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountTree
-import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.DashboardCustomize
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.HelpCenter
-import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.ViewKanban
-import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -70,110 +62,12 @@ fun resolveWorkspaceAppVisual(appId: String): Pair<ImageVector, Color> {
     }
 }
 
-/**
- * Prominent top-left launcher pill placed directly in the mobile header for immediate
- * one-tap access to flagship KodBox plugins like `project` (项目管理) plus the full App Hub.
- */
-@Composable
-fun TopLeftPluginLauncherPill(
-    primaryApp: KodWorkspaceApp?,
-    onLaunchPrimary: (KodWorkspaceApp) -> Unit,
-    onOpenAppHub: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Row(
-        modifier = modifier.padding(start = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        if (primaryApp != null) {
-            val (icon, tint) = resolveWorkspaceAppVisual(primaryApp.id)
-            Surface(
-                onClick = { onLaunchPrimary(primaryApp) },
-                shape = RoundedCornerShape(14.dp),
-                color = tint.copy(alpha = 0.13f),
-                border = BorderStroke(1.dp, tint.copy(alpha = 0.28f)),
-                modifier = Modifier
-                    .height(38.dp)
-                    .testTag("top_left_project_launcher")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = primaryApp.title,
-                        tint = tint,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = primaryApp.title,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = tint,
-                        maxLines = 1
-                    )
-                }
-            }
-            Surface(
-                onClick = onOpenAppHub,
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier
-                    .size(36.dp)
-                    .testTag("top_left_app_hub_button")
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Filled.Apps,
-                        contentDescription = "全部插件应用",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-        } else {
-            Surface(
-                onClick = onOpenAppHub,
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.primaryContainer,
-                modifier = Modifier
-                    .height(38.dp)
-                    .testTag("top_left_app_hub_button")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Apps,
-                        contentDescription = "插件应用",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "应用",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-            }
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun KodAppHubBottomSheet(
     apps: List<KodWorkspaceApp>,
-    pinnedAppId: String,
     imageLoader: ImageLoader,
     onLaunchApp: (KodWorkspaceApp) -> Unit,
-    onPinApp: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -181,22 +75,22 @@ fun KodAppHubBottomSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(bottom = 18.dp)
+                .padding(bottom = 20.dp)
         ) {
             Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
                 Text(
-                    text = "KodBox 应用与插件工作台",
+                    text = "扩展应用",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "点击应用立即打开，点击图钉可将常用插件置顶到首页左上角",
+                    text = "已从服务器自动识别并同步登录态的网盘插件应用",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             if (apps.isEmpty()) {
                 Box(
@@ -206,7 +100,7 @@ fun KodAppHubBottomSheet(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "当前服务器尚未发现已启用的工作台插件",
+                        text = "当前服务器暂无可打开的扩展应用",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -214,72 +108,67 @@ fun KodAppHubBottomSheet(
             } else {
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     items(apps, key = { it.id }) { app ->
-                        val isPinned = app.id.equals(pinnedAppId, ignoreCase = true)
-                        val (icon, tint) = resolveWorkspaceAppVisual(app.id)
+                        val (fallbackIcon, tint) = resolveWorkspaceAppVisual(app.id)
                         Card(
+                            onClick = { onLaunchApp(app) },
                             shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isPinned) {
-                                    tint.copy(alpha = 0.08f)
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainerLow
-                                }
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
                             ),
-                            border = if (isPinned) BorderStroke(1.dp, tint.copy(alpha = 0.35f)) else null,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(16.dp))
-                                .clickable { onLaunchApp(app) }
-                                .testTag("app_hub_item_${app.id.lowercase()}")
+                            modifier = Modifier.testTag("app_hub_card_${app.id.lowercase()}")
                         ) {
                             Column(
-                                modifier = Modifier.padding(12.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Box(
                                         modifier = Modifier
-                                            .size(38.dp)
-                                            .clip(RoundedCornerShape(10.dp))
+                                            .size(40.dp)
+                                            .clip(RoundedCornerShape(12.dp))
                                             .background(tint.copy(alpha = 0.14f)),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        if (app.iconUrl.isNotBlank() && !app.iconUrl.endsWith(".svg", ignoreCase = true)) {
+                                        if (app.iconUrl.isNotBlank()) {
                                             AsyncImage(
                                                 model = app.iconUrl,
                                                 imageLoader = imageLoader,
                                                 contentDescription = app.title,
-                                                modifier = Modifier.size(24.dp)
+                                                modifier = Modifier.size(26.dp)
                                             )
                                         } else {
                                             Icon(
-                                                imageVector = icon,
-                                                contentDescription = null,
+                                                imageVector = fallbackIcon,
+                                                contentDescription = app.title,
                                                 tint = tint,
                                                 modifier = Modifier.size(22.dp)
                                             )
                                         }
                                     }
-                                    IconButton(
-                                        onClick = { onPinApp(app.id) },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (isPinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
-                                            contentDescription = "置顶到左上角",
-                                            tint = if (isPinned) tint else MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(17.dp)
-                                        )
+                                    if (app.isAdminOnly) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = MaterialTheme.colorScheme.tertiaryContainer
+                                        ) {
+                                            Text(
+                                                text = "管理员",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
                                     }
                                 }
                                 Text(
@@ -289,13 +178,15 @@ fun KodAppHubBottomSheet(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                Text(
-                                    text = app.description.ifBlank { app.id },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                if (app.description.isNotBlank()) {
+                                    Text(
+                                        text = app.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         }
                     }

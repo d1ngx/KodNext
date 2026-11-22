@@ -164,7 +164,7 @@ fun FilePreviewScreen(
                         ) {
                             Icon(
                                 imageVector = if (preferPluginMode) Icons.Filled.Image else Icons.Filled.Extension,
-                                contentDescription = if (preferPluginMode) "切换原生视图" else "使用 KodBox 插件打开"
+                                contentDescription = if (preferPluginMode) "切换原生视图" else "使用网盘插件打开"
                             )
                         }
                     }

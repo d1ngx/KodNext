@@ -125,7 +125,11 @@ fun TransfersTabContent(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     val statusLabel = when (task.status) {
-                                        TransferStatus.RUNNING -> "${KodFormatters.formatBytes(task.bytesTransferred)} / ${KodFormatters.formatBytes(task.totalBytes)}"
+                                        TransferStatus.RUNNING -> if (task.totalBytes > 0L) {
+                                            "${KodFormatters.formatBytes(task.bytesTransferred)} / ${KodFormatters.formatBytes(task.totalBytes)}"
+                                        } else {
+                                            "传输中 · ${KodFormatters.formatBytes(task.bytesTransferred)}"
+                                        }
                                         TransferStatus.COMPLETED -> if (task.type == TransferType.UPLOAD) "已上传到网盘" else "已保存到本地 (${KodFormatters.formatBytes(task.bytesTransferred)})"
                                         TransferStatus.FAILED -> task.errorMessage.ifBlank { "传输失败" }
                                         TransferStatus.CANCELLED -> "已取消"

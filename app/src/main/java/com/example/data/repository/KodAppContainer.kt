@@ -24,7 +24,7 @@ class KodAppContainer(context: Context) {
     val accountStore: KodAccountStore by lazy { KodAccountStore(appContext, credentialVault) }
     val database: KodDatabase by lazy { KodDatabase.build(appContext) }
     val directoryCache: KodDirectoryCache by lazy { KodDirectoryCache() }
-    val syncEngine: KodSyncEngine by lazy { KodSyncEngine(appContext, apiClient) }
+    val syncEngine: KodSyncEngine by lazy { KodSyncEngine(appContext, apiClient, transferRepository) }
 
     val authRepository: AuthRepository by lazy {
         AuthRepository(

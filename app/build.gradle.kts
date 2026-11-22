@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.kodnext.vkmrzp"
     minSdk = 24
     targetSdk = 36
-    versionCode = 10
-    versionName = "6.4"
+    versionCode = 12
+    versionName = "6.6"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

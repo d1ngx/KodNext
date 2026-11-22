@@ -130,6 +130,39 @@ class TransferRepository(
         }
     }
 
+    suspend fun recordDirectTransferStart(
+        accountId: String,
+        fileName: String,
+        remotePath: String,
+        type: TransferType,
+        totalBytes: Long,
+        sourceUri: String = "",
+        mimeType: String = "",
+        localPath: String = ""
+    ): String {
+        val taskId = UUID.randomUUID().toString()
+        val task = TransferTask(
+            id = taskId,
+            fileName = fileName,
+            remotePath = remotePath,
+            localPath = localPath,
+            type = type,
+            progress = 0f,
+            bytesTransferred = 0L,
+            totalBytes = totalBytes.coerceAtLeast(0L),
+            status = TransferStatus.RUNNING,
+            timestamp = System.currentTimeMillis(),
+            accountId = accountId,
+            sourceUri = sourceUri,
+            mimeType = mimeType
+        )
+        transferTaskDao.upsert(TransferTaskEntity.fromModel(task, workRequestId = ""))
+        return taskId
+    }
+
+    suspend fun isTaskCancelled(taskId: String): Boolean =
+        transferTaskDao.getById(taskId)?.status == TransferStatus.CANCELLED.name
+
     suspend fun updateProgress(taskId: String, progress: Float, bytesTransferred: Long, totalBytes: Long) {
         transferTaskDao.updateProgress(taskId, progress, bytesTransferred, totalBytes)
     }

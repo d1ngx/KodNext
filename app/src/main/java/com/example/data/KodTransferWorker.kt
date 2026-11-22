@@ -207,9 +207,7 @@ class KodTransferWorker(
         taskEntity: com.example.data.local.TransferTaskEntity,
         error: Throwable
     ): Result {
-        val isFatal = KodBoxApiClient.isAuthFailure(error) ||
-            error is SecurityException ||
-            error.message?.contains("无法读取本地文件流") == true
+        val isFatal = KodBoxApiClient.isFatalTransferError(error)
         val canAutoRetry = !isFatal && runAttemptCount < 2
 
         if (canAutoRetry) {

@@ -58,7 +58,9 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
     private val _events = MutableSharedFlow<KodUiEvent>(extraBufferCapacity = 16)
     val events: SharedFlow<KodUiEvent> = _events.asSharedFlow()
 
+    private var transfersHydrated: Boolean = false
     private var previousCompletedUploadIds: Set<String> = emptySet()
+    private var previousFailedTransferIds: Set<String> = emptySet()
 
     private val filesCoordinator = KodFilesCoordinator(
         scope = viewModelScope,
@@ -162,14 +164,27 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
                 } else emptyList()
                 scopedRules to scopedTransfers
             }.collect { (scopedRules, scopedTransfers) ->
-                // Auto-refresh directory when a background upload newly completes
+                // Auto-refresh directory & notify user when background uploads complete or transfers fail
                 val completedUploads = scopedTransfers
                     .filter { it.type == TransferType.UPLOAD && it.status == TransferStatus.COMPLETED }
-                    .map { it.id }
-                    .toSet()
-                val newlyCompleted = completedUploads - previousCompletedUploadIds
-                val shouldRefresh = previousCompletedUploadIds.isNotEmpty() && newlyCompleted.isNotEmpty()
-                previousCompletedUploadIds = completedUploads
+                val completedUploadIds = completedUploads.map { it.id }.toSet()
+                val failedTransfers = scopedTransfers.filter { it.status == TransferStatus.FAILED }
+                val failedTransferIds = failedTransfers.map { it.id }.toSet()
+
+                val newlyCompletedUploads = if (transfersHydrated) {
+                    completedUploads.filter { it.id !in previousCompletedUploadIds }
+                } else {
+                    emptyList()
+                }
+                val newlyFailedTransfers = if (transfersHydrated) {
+                    failedTransfers.filter { it.id !in previousFailedTransferIds }
+                } else {
+                    emptyList()
+                }
+
+                transfersHydrated = true
+                previousCompletedUploadIds = completedUploadIds
+                previousFailedTransferIds = failedTransferIds
 
                 _uiState.update { state ->
                     state.copy(
@@ -177,8 +192,23 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
                         transfers = scopedTransfers
                     )
                 }
-                if (shouldRefresh) {
+                val isBatchSyncRunning = _uiState.value.activeSyncingRuleIds.isNotEmpty()
+                if (newlyCompletedUploads.isNotEmpty() && !isBatchSyncRunning) {
                     filesCoordinator.refreshCurrentDirectory()
+                    val first = newlyCompletedUploads.first()
+                    val msg = if (newlyCompletedUploads.size == 1) {
+                        "上传完成：${first.fileName}"
+                    } else {
+                        "已完成 ${newlyCompletedUploads.size} 个文件上传"
+                    }
+                    emitMessage(msg)
+                }
+                if (!isBatchSyncRunning) {
+                    newlyFailedTransfers.firstOrNull()?.let { failed ->
+                        val prefix = if (failed.type == TransferType.UPLOAD) "上传失败" else "下载失败"
+                        val detail = failed.errorMessage.ifBlank { "请前往传输列表重试" }
+                        emitError("$prefix (${failed.fileName})：$detail")
+                    }
                 }
             }
         }

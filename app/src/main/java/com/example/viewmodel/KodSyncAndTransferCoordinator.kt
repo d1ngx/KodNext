@@ -1,6 +1,7 @@
 package com.example.viewmodel
 
 import android.net.Uri
+import com.example.data.KodBoxApiClient
 import com.example.data.KodFormatters
 import com.example.data.repository.SyncRepository
 import com.example.data.repository.TransferRepository
@@ -188,11 +189,18 @@ internal class KodSyncAndTransferCoordinator(
     fun uploadUris(uris: List<Uri>) {
         if (uris.isEmpty()) return
         val account = uiState.value.activeAccount ?: return
-        val targetDir = uiState.value.currentPath.ifBlank { account.personalRootPath }
+        val currentPath = uiState.value.currentPath
+        val redirectedToPersonal = !KodBoxApiClient.isWritableKodDirectory(currentPath)
+        val targetDir = if (redirectedToPersonal) account.personalRootPath else currentPath
         scope.launch {
             val tasks = transferRepository.enqueueUploads(account, targetDir, uris)
             if (tasks.isNotEmpty()) {
-                emitMessage("已提交 ${tasks.size} 个后台上传任务")
+                val msg = if (redirectedToPersonal) {
+                    "当前视图不支持直接上传，已提交 ${tasks.size} 个任务上传至个人空间"
+                } else {
+                    "已提交 ${tasks.size} 个后台上传任务"
+                }
+                emitMessage(msg)
             }
         }
     }

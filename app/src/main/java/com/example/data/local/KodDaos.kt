@@ -53,7 +53,7 @@ interface TransferTaskDao {
             bytesTransferred = :bytesTransferred,
             totalBytes = :totalBytes,
             status = :status
-        WHERE id = :id AND status != 'CANCELLED'
+        WHERE id = :id AND status = 'RUNNING'
         """
     )
     suspend fun updateProgress(

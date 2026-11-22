@@ -163,23 +163,112 @@ class KodArchitectureUpgradeTest {
         assertEquals(1, cached!!.items.size)
         assertEquals("hello.md", cached.items.first().name)
         assertEquals("重要", cached.items.first().tags.first().name)
+
+        // 4. Direct sync transfer tracking + terminal-state progress guard
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val transferRepo = com.example.data.repository.TransferRepository(context, db.transferTaskDao())
+        val syncUploadId = transferRepo.recordDirectTransferStart(
+            accountId = "acc_1",
+            fileName = "docs/report.pdf",
+            remotePath = "{source:1}/Docs/",
+            type = TransferType.UPLOAD,
+            totalBytes = 2048L,
+            sourceUri = "content://tree/docs/report.pdf",
+            mimeType = "application/pdf"
+        )
+        transferRepo.updateProgress(syncUploadId, 0.5f, 1024L, 2048L)
+        val running = db.transferTaskDao().getById(syncUploadId)?.toModel()
+        assertNotNull(running)
+        assertEquals(TransferStatus.RUNNING, running!!.status)
+        assertEquals(1024L, running.bytesTransferred)
+
+        transferRepo.markTerminalState(
+            taskId = syncUploadId,
+            status = TransferStatus.COMPLETED,
+            progress = 1f,
+            bytesTransferred = 2048L,
+            localPath = "",
+            errorMessage = ""
+        )
+        // Late throttled progress update must NOT revert COMPLETED back to RUNNING
+        transferRepo.updateProgress(syncUploadId, 0.8f, 1600L, 2048L)
+        val finalized = db.transferTaskDao().getById(syncUploadId)?.toModel()
+        assertNotNull(finalized)
+        assertEquals(TransferStatus.COMPLETED, finalized!!.status)
+        assertEquals(2048L, finalized.bytesTransferred)
     }
 
     @Test
     fun apiClient_chunkPlanAndAuthErrorDetection() {
-        val smallPlan = KodBoxApiClient.computeChunkPlan(1024L * 1024L)
+        assertEquals(1L * 1024L * 1024L, KodBoxApiClient.UPLOAD_CHUNK_SIZE_BYTES)
+
+        val smallPlan = KodBoxApiClient.computeChunkPlan(512L * 1024L)
         assertEquals(1, smallPlan.first)
 
-        val exactPlan = KodBoxApiClient.computeChunkPlan(4L * 1024L * 1024L)
+        val exactPlan = KodBoxApiClient.computeChunkPlan(1L * 1024L * 1024L)
         assertEquals(1, exactPlan.first)
 
+        val fourMbPlan = KodBoxApiClient.computeChunkPlan(4L * 1024L * 1024L)
+        assertEquals(4, fourMbPlan.first)
+        assertEquals(KodBoxApiClient.UPLOAD_CHUNK_SIZE_BYTES, fourMbPlan.second)
+
         val largePlan = KodBoxApiClient.computeChunkPlan(10L * 1024L * 1024L + 123L)
-        assertEquals(3, largePlan.first)
+        assertEquals(11, largePlan.first)
         assertEquals(KodBoxApiClient.UPLOAD_CHUNK_SIZE_BYTES, largePlan.second)
 
         assertTrue(KodBoxApiClient.isAuthFailure(IllegalStateException("服务器请求错误 (HTTP 401)")))
         assertTrue(KodBoxApiClient.isAuthFailure(IllegalStateException("登录状态已过期，请重新登录")))
         assertFalse(KodBoxApiClient.isAuthFailure(IllegalStateException("SocketTimeoutException: timeout")))
+    }
+
+    @Test
+    fun apiClient_uploadRoutesStrictValidationAndDirectoryGuards() {
+        // 1. Official KodBox v2 routes (preventing explorer/index/fileUpload 200-20 silent failure)
+        assertEquals("explorer/upload/fileUpload", KodBoxApiClient.ROUTE_FILE_UPLOAD)
+        assertEquals("explorer/upload/serverDownload", KodBoxApiClient.ROUTE_SERVER_DOWNLOAD)
+        assertEquals("explorer/editor/fileSave", KodBoxApiClient.ROUTE_EDITOR_FILE_SAVE)
+
+        // 2. Strict JSON response validation never allows false success
+        val ok = KodBoxApiClient.requireKodSuccessJson(
+            """{"code":true,"data":"上传成功","info":"{source:123}"}""",
+            "上传失败"
+        )
+        assertEquals("{source:123}", ok.optString("info"))
+
+        val invalidBodies = listOf(
+            "",
+            "   ",
+            "action not exist!", // 17-20 byte plain text like the observed HTTP 200 20 log
+            "<html><body>404 Not Found</body></html>",
+            """{"code":false,"data":"没有权限"}""",
+            """{"code":0,"info":"空间不足"}"""
+        )
+        invalidBodies.forEach { body ->
+            val result = runCatching { KodBoxApiClient.requireKodSuccessJson(body, "上传失败") }
+            assertTrue("Expected failure for body: '$body'", result.isFailure)
+        }
+
+        // 3. Writable directory check blocks virtual views
+        assertTrue(KodBoxApiClient.isWritableKodDirectory("{source:17}/"))
+        assertTrue(KodBoxApiClient.isWritableKodDirectory("{source:17}/Docs/"))
+        assertTrue(KodBoxApiClient.isWritableKodDirectory("/workspace/docs"))
+        assertFalse(KodBoxApiClient.isWritableKodDirectory(""))
+        assertFalse(KodBoxApiClient.isWritableKodDirectory("{block:enterprise}/"))
+        assertFalse(KodBoxApiClient.isWritableKodDirectory("{userFav}/"))
+        assertFalse(KodBoxApiClient.isWritableKodDirectory("{userRecycle}/"))
+        assertFalse(KodBoxApiClient.isWritableKodDirectory("{userFileType:doc}/"))
+        assertFalse(KodBoxApiClient.isWritableKodDirectory("{userFileTag:1}/"))
+        assertFalse(KodBoxApiClient.isWritableKodDirectory("{userRencent}/"))
+        assertFalse(KodBoxApiClient.isWritableKodDirectory("{userShare}/"))
+        assertFalse(KodBoxApiClient.isWritableKodDirectory("{shareToMe}/"))
+        assertFalse(KodBoxApiClient.isWritableKodDirectory("{search}/"))
+
+        // 4. Deterministic upload errors fail fast instead of blindly retrying
+        assertTrue(KodBoxApiClient.isFatalTransferError(IllegalStateException("上传失败：服务器返回非 JSON 数据 (action not exist!)")))
+        assertTrue(KodBoxApiClient.isFatalTransferError(IllegalStateException("上传失败：服务器返回空响应")))
+        assertTrue(KodBoxApiClient.isFatalTransferError(IllegalStateException("没有权限")))
+        assertTrue(KodBoxApiClient.isFatalTransferError(IllegalStateException("HTTP 413 Request Entity Too Large")))
+        assertFalse(KodBoxApiClient.isFatalTransferError(IllegalStateException("SocketTimeoutException: timeout")))
     }
 
     @Test

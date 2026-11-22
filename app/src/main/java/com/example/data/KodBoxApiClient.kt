@@ -47,7 +47,10 @@ import java.util.concurrent.TimeUnit
 class KodBoxApiClient {
 
     companion object {
-        const val UPLOAD_CHUNK_SIZE_BYTES: Long = 4L * 1024L * 1024L // 4 MB chunks for large files
+        const val UPLOAD_CHUNK_SIZE_BYTES: Long = 1L * 1024L * 1024L // 1 MB chunks safe for PHP upload_max_filesize=2M & proxies
+        const val ROUTE_FILE_UPLOAD: String = "explorer/upload/fileUpload"
+        const val ROUTE_SERVER_DOWNLOAD: String = "explorer/upload/serverDownload"
+        const val ROUTE_EDITOR_FILE_SAVE: String = "explorer/editor/fileSave"
 
         /**
          * Computes (totalChunks, chunkSize) for KodBox chunked upload (`chunks` / `chunk` / `chunkSize`).
@@ -56,6 +59,75 @@ class KodBoxApiClient {
             if (totalBytes <= 0L || totalBytes <= chunkSize) return 1 to totalBytes.coerceAtLeast(0L)
             val totalChunks = ((totalBytes + chunkSize - 1L) / chunkSize).toInt().coerceAtLeast(1)
             return totalChunks to chunkSize
+        }
+
+        /**
+         * Checks whether a KodBox path is a real writable directory rather than a virtual aggregation view
+         * (such as `{block:...}`, `{userFav}`, `{userRecycle}`, `{userFileType:...}`, `{search}`, etc.).
+         */
+        fun isWritableKodDirectory(path: String): Boolean {
+            val trimmed = path.trim()
+            if (trimmed.isEmpty()) return false
+            val lower = trimmed.lowercase(Locale.ROOT)
+            val virtualPrefixes = listOf(
+                "{block:",
+                "{userfav",
+                "{userrecycle",
+                "{userfiletype",
+                "{userfiletag",
+                "{userrencent",
+                "{usershare",
+                "{sharetome",
+                "{search"
+            )
+            return virtualPrefixes.none { lower.startsWith(it) }
+        }
+
+        /**
+         * Strictly validates that a KodBox API response is a non-empty JSON object with a truthy `code`.
+         * Never silently accepts empty bodies, HTML pages, or plain-text errors (e.g. `action not exist!`).
+         */
+        fun requireKodSuccessJson(rawBody: String, fallbackError: String): JSONObject {
+            val trimmed = rawBody.trim()
+            if (trimmed.isEmpty()) {
+                error("$fallbackError：服务器返回空响应")
+            }
+            if (!trimmed.startsWith("{")) {
+                val snippet = trimmed.replace(Regex("\\s+"), " ").take(80)
+                error("$fallbackError：服务器返回非 JSON 数据 ($snippet)")
+            }
+            val json = runCatching { JSONObject(trimmed) }.getOrNull()
+                ?: error("$fallbackError：服务器 JSON 解析失败")
+            if (!isKodSuccessJson(json)) {
+                error(extractKodErrorJson(json, fallbackError))
+            }
+            return json
+        }
+
+        internal fun isKodSuccessJson(json: JSONObject): Boolean {
+            val code = json.opt("code")
+            return when (code) {
+                is Boolean -> code
+                is Number -> code.toInt() == 1 || code.toInt() == 200
+                is String -> code.equals("true", ignoreCase = true) || code == "1" || code == "200"
+                else -> false
+            }
+        }
+
+        internal fun extractKodErrorJson(json: JSONObject, fallback: String): String {
+            val dataStr = (json.opt("data") as? String)?.trim()
+            if (!dataStr.isNullOrBlank() && !dataStr.equals("false", true) && !dataStr.equals("null", true)) {
+                return dataStr
+            }
+            val infoStr = (json.opt("info") as? String)?.trim()
+            if (!infoStr.isNullOrBlank() && !infoStr.equals("false", true) && !infoStr.equals("null", true)) {
+                return infoStr
+            }
+            val msgStr = (json.opt("msg") as? String)?.trim()
+            if (!msgStr.isNullOrBlank() && !msgStr.equals("false", true) && !msgStr.equals("null", true)) {
+                return msgStr
+            }
+            return fallback
         }
 
         /**
@@ -72,11 +144,33 @@ class KodBoxApiClient {
         }
 
         /**
+         * Detects deterministic transfer errors that will not succeed on blind retry
+         * (permissions, quota, invalid route / non-JSON response, HTTP 4xx, unreadable local file).
+         */
+        fun isFatalTransferError(error: Throwable?): Boolean {
+            if (error == null) return false
+            if (isAuthFailure(error) || error is SecurityException || error is IllegalArgumentException) return true
+            val msg = error.message.orEmpty()
+            return msg.contains("无法读取本地文件流") ||
+                msg.contains("非 JSON") ||
+                msg.contains("返回空响应") ||
+                msg.contains("没有权限") ||
+                msg.contains("无权") ||
+                msg.contains("空间不足") ||
+                msg.contains("不允许") ||
+                msg.contains("不支持") ||
+                msg.contains("HTTP 400") ||
+                msg.contains("HTTP 404") ||
+                msg.contains("HTTP 413") ||
+                msg.contains("HTTP 415")
+        }
+
+        /**
          * Builds the official KodCloud Android client User-Agent format observed in production server logs:
-         * `kodCloud-System=Android;AppVersion=6.3;Language=zh_CN`
+         * `kodCloud-System=Android;AppVersion=6.6;Language=zh_CN`
          */
         fun buildKodCloudAppUserAgent(): String {
-            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "6.4" }
+            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "6.6" }
             val locale = Locale.getDefault()
             val lang = if (locale.country.isNotBlank()) "${locale.language}_${locale.country}" else locale.language.ifBlank { "zh_CN" }
             return "kodCloud-System=Android;AppVersion=$appVersion;Language=$lang"
@@ -92,7 +186,7 @@ class KodBoxApiClient {
                 .replace("\"", "\\\"")
                 .replace("\r", "")
                 .replace("\n", "")
-            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "6.4" }
+            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "6.6" }
             val release = runCatching { Build.VERSION.RELEASE }.getOrNull().orEmpty().ifBlank { "14" }
             val sdkInt = runCatching { Build.VERSION.SDK_INT }.getOrNull()?.takeIf { it > 0 }?.toString() ?: "34"
             val brand = runCatching { Build.BRAND }.getOrNull().orEmpty().trim().ifBlank { "Android" }
@@ -162,7 +256,7 @@ class KodBoxApiClient {
                 manufacturer.isNotBlank() && !model.startsWith(manufacturer, ignoreCase = true) -> "$manufacturer $model"
                 else -> model
             }.replace(Regex("[\\r\\n();]+"), " ").trim().ifBlank { "Android Device" }
-            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "6.4" }
+            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "6.6" }
             return "Mozilla/5.0 (Linux; Android $androidVersion; $deviceLabel) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36 KodNext/$appVersion"
         }
     }
@@ -1437,13 +1531,15 @@ class KodBoxApiClient {
         if (parsed.scheme != "http" && parsed.scheme != "https") {
             return@withContext Result.failure(IllegalArgumentException("离线下载仅支持 HTTP/HTTPS 链接"))
         }
+        val safeDir = if (isWritableKodDirectory(targetDir)) targetDir.trim() else account.personalRootPath
         runCatching {
             val json = executeKodPost(
                 account = account,
-                route = "explorer/index/serverDownload",
+                route = ROUTE_SERVER_DOWNLOAD,
                 params = mapOf(
                     "type" to "download",
-                    "savePath" to targetDir,
+                    "savePath" to safeDir,
+                    "path" to safeDir,
                     "url" to cleanUrl,
                     "uuid" to UUID.randomUUID().toString()
                 )
@@ -1478,22 +1574,38 @@ class KodBoxApiClient {
                     }
                     out.toByteArray()
                 }
-                bytes.toString(Charsets.UTF_8)
+                val text = bytes.toString(Charsets.UTF_8)
+                val contentType = resp.header("Content-Type").orEmpty().lowercase(Locale.ROOT)
+                if (contentType.contains("application/json") && item.normalizedExt != "json") {
+                    val maybeErr = parseJsonObject(text)
+                    if (maybeErr != null && maybeErr.has("code") && !isKodSuccess(maybeErr)) {
+                        error(extractKodError(maybeErr, "读取文件失败"))
+                    }
+                }
+                text
             }
         }
     }
 
     suspend fun saveTextFile(account: KodAccount, item: KodFileItem, content: String): Result<Unit> = withContext(Dispatchers.IO) {
+        hydrateAccountSession(account)
         runCatching {
-            val json = executeKodPost(
-                account = account,
-                route = "explorer/index/fileSave",
-                params = mapOf(
-                    "path" to item.path,
-                    "content" to content,
-                    "charset" to "utf-8"
-                )
+            val params = mapOf(
+                "path" to item.path,
+                "content" to content,
+                "charset" to "utf-8"
             )
+            val primaryAttempt = runCatching {
+                executeKodPost(account = account, route = ROUTE_EDITOR_FILE_SAVE, params = params)
+            }
+            val json = primaryAttempt.getOrElse { primaryErr ->
+                // Fallback for older builds exposing explorer/index/fileSave
+                if (primaryErr.message?.contains("非 JSON") == true || primaryErr.message?.contains("HTTP 404") == true) {
+                    executeKodPost(account = account, route = "explorer/index/fileSave", params = params)
+                } else {
+                    throw primaryErr
+                }
+            }
             if (!isKodSuccess(json)) error(extractKodError(json, "保存文件失败"))
         }
     }
@@ -1509,34 +1621,57 @@ class KodBoxApiClient {
     ): Result<Unit> = withContext(Dispatchers.IO) {
         hydrateAccountSession(account)
         runCatching {
-            val (totalChunks, chunkSize) = computeChunkPlan(totalBytes)
-            val url = buildAuthenticatedUrl(account, "explorer/index/fileUpload", emptyMap())
+            val normalizedTargetDir = targetDir.trim()
+            if (!isWritableKodDirectory(normalizedTargetDir)) {
+                error("当前目录不支持上传文件，请先进入个人空间或企业网盘具体文件夹")
+            }
+            val safeFileName = fileName.trim().ifBlank { "upload_${System.currentTimeMillis()}" }
+            val resolvedTotalBytes = if (totalBytes > 0L) {
+                totalBytes
+            } else {
+                measureInputStreamBytes(inputStreamProvider)
+            }
+            val (totalChunks, chunkSize) = computeChunkPlan(resolvedTotalBytes)
+            val url = buildAuthenticatedUrl(account, ROUTE_FILE_UPLOAD, emptyMap())
 
             if (totalChunks <= 1) {
                 uploadSingleRequest(
                     account = account,
                     url = url,
-                    targetDir = targetDir,
-                    fileName = fileName,
+                    targetDir = normalizedTargetDir,
+                    fileName = safeFileName,
                     mimeType = mimeType,
                     inputStreamProvider = inputStreamProvider,
-                    totalBytes = totalBytes,
+                    totalBytes = resolvedTotalBytes,
                     onProgress = onProgress
                 )
             } else {
                 uploadChunkedRequests(
                     account = account,
                     url = url,
-                    targetDir = targetDir,
-                    fileName = fileName,
-                    mimeType = mimeType,
+                    targetDir = normalizedTargetDir,
+                    fileName = safeFileName,
                     inputStreamProvider = inputStreamProvider,
-                    totalBytes = totalBytes,
+                    totalBytes = resolvedTotalBytes,
                     totalChunks = totalChunks,
                     chunkSize = chunkSize,
                     onProgress = onProgress
                 )
             }
+        }
+    }
+
+    private fun measureInputStreamBytes(inputStreamProvider: () -> InputStream?): Long {
+        val stream = inputStreamProvider() ?: error("无法读取本地文件流")
+        return stream.use { input ->
+            val buf = ByteArray(16 * 1024)
+            var total = 0L
+            while (true) {
+                val read = input.read(buf)
+                if (read == -1) break
+                total += read
+            }
+            total
         }
     }
 
@@ -1550,9 +1685,10 @@ class KodBoxApiClient {
         totalBytes: Long,
         onProgress: (bytesWritten: Long, total: Long) -> Unit
     ) {
+        val resolvedMediaType = mimeType.toMediaTypeOrNull() ?: "application/octet-stream".toMediaTypeOrNull()
         val progressBody = object : RequestBody() {
-            override fun contentType(): MediaType? = mimeType.toMediaTypeOrNull()
-            override fun contentLength(): Long = if (totalBytes > 0L) totalBytes else -1L
+            override fun contentType(): MediaType? = resolvedMediaType
+            override fun contentLength(): Long = if (totalBytes >= 0L) totalBytes else -1L
             override fun writeTo(sink: BufferedSink) {
                 val stream = inputStreamProvider() ?: error("无法读取本地文件流")
                 stream.use { input ->
@@ -1575,6 +1711,7 @@ class KodBoxApiClient {
             .addFormDataPart("name", fileName)
             .addFormDataPart("chunks", "1")
             .addFormDataPart("chunk", "0")
+            .addFormDataPart("chunkSize", totalBytes.coerceAtLeast(1L).toString())
             .addFormDataPart("size", totalBytes.coerceAtLeast(0L).toString())
             .addFormDataPart("file", fileName, progressBody)
 
@@ -1587,10 +1724,7 @@ class KodBoxApiClient {
         okHttpClient.newCall(req).execute().use { resp ->
             val rawBody = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) error("上传失败 (HTTP ${resp.code})")
-            val json = parseJsonObject(rawBody)
-            if (json != null && !isKodSuccess(json)) {
-                error(extractKodError(json, "服务器拒绝上传"))
-            }
+            requireKodSuccessJson(rawBody, "文件上传失败")
         }
     }
 
@@ -1599,7 +1733,6 @@ class KodBoxApiClient {
         url: String,
         targetDir: String,
         fileName: String,
-        mimeType: String,
         inputStreamProvider: () -> InputStream?,
         totalBytes: Long,
         totalChunks: Int,
@@ -1608,6 +1741,7 @@ class KodBoxApiClient {
     ) {
         val stream = inputStreamProvider() ?: error("无法读取本地文件流")
         val chunkBuffer = ByteArray(chunkSize.toInt())
+        val octetStreamType = "application/octet-stream".toMediaTypeOrNull()
         var uploadedBeforeChunk = 0L
 
         stream.use { input ->
@@ -1618,7 +1752,9 @@ class KodBoxApiClient {
                     if (read == -1) break
                     filled += read
                 }
-                if (filled <= 0) break
+                if (filled <= 0) {
+                    error("读取本地文件提前结束，已读取 $uploadedBeforeChunk/$totalBytes 字节")
+                }
 
                 val chunkBytes = if (filled == chunkBuffer.size) chunkBuffer else chunkBuffer.copyOf(filled)
                 var lastError: Throwable? = null
@@ -1628,7 +1764,7 @@ class KodBoxApiClient {
                     try {
                         val baseOffset = uploadedBeforeChunk
                         val chunkBody = object : RequestBody() {
-                            override fun contentType(): MediaType? = mimeType.toMediaTypeOrNull()
+                            override fun contentType(): MediaType? = octetStreamType
                             override fun contentLength(): Long = chunkBytes.size.toLong()
                             override fun writeTo(sink: BufferedSink) {
                                 var offset = 0
@@ -1660,17 +1796,16 @@ class KodBoxApiClient {
 
                         okHttpClient.newCall(req).execute().use { resp ->
                             val rawBody = resp.body?.string().orEmpty()
-                            if (!resp.isSuccessful) error("分片上传失败 (${chunkIndex + 1}/$totalChunks, HTTP ${resp.code})")
-                            val json = parseJsonObject(rawBody)
-                            if (json != null && !isKodSuccess(json)) {
-                                error(extractKodError(json, "服务器拒绝分片 (${chunkIndex + 1}/$totalChunks)"))
+                            if (!resp.isSuccessful) {
+                                error("分片上传失败 (${chunkIndex + 1}/$totalChunks, HTTP ${resp.code})")
                             }
+                            requireKodSuccessJson(rawBody, "分片上传失败 (${chunkIndex + 1}/$totalChunks)")
                         }
                         succeeded = true
                         break
                     } catch (e: Throwable) {
                         lastError = e
-                        if (isAuthFailure(e) || attempt == 2) break
+                        if (isFatalTransferError(e) || attempt == 2) break
                     }
                 }
                 if (!succeeded) {
@@ -1680,6 +1815,9 @@ class KodBoxApiClient {
                 onProgress(uploadedBeforeChunk, totalBytes)
             }
         }
+        if (uploadedBeforeChunk < totalBytes) {
+            error("文件上传不完整，仅传输 $uploadedBeforeChunk/$totalBytes 字节")
+        }
     }
 
     private fun appendUploadAuthFields(builder: MultipartBody.Builder, account: KodAccount) {
@@ -1688,6 +1826,32 @@ class KodBoxApiClient {
         }
         if (account.accessToken.isNotBlank()) {
             builder.addFormDataPart("accessToken", account.accessToken)
+        }
+    }
+
+    private fun verifyBinaryDownloadResponse(
+        resp: okhttp3.Response,
+        fileExt: String,
+        actionLabel: String
+    ) {
+        if (!resp.isSuccessful) error("$actionLabel (HTTP ${resp.code})")
+        val contentType = resp.header("Content-Type").orEmpty().lowercase(Locale.ROOT)
+        val contentDisp = resp.header("Content-Disposition").orEmpty().lowercase(Locale.ROOT)
+        val normalizedExt = fileExt.trim().lowercase(Locale.ROOT)
+        val isAttachment = contentDisp.contains("attachment")
+
+        if (!isAttachment && contentType.contains("application/json") && normalizedExt != "json") {
+            val raw = resp.body?.string().orEmpty()
+            val json = parseJsonObject(raw)
+            if (json != null && json.has("code") && !isKodSuccess(json)) {
+                error(extractKodError(json, actionLabel))
+            }
+            error("$actionLabel：服务器返回 JSON 错误而非文件内容")
+        }
+
+        val htmlExts = setOf("html", "htm", "xhtml", "mht", "mhtml")
+        if (!isAttachment && contentType.contains("text/html") && normalizedExt !in htmlExts) {
+            error("$actionLabel：服务器返回了网页而非文件内容，请检查登录状态或文件权限")
         }
     }
 
@@ -1726,7 +1890,7 @@ class KodBoxApiClient {
                     onProgress(destinationFile.length(), destinationFile.length())
                     return@runCatching destinationFile
                 }
-                if (!resp.isSuccessful) error("下载失败 (HTTP ${resp.code})")
+                verifyBinaryDownloadResponse(resp, item.normalizedExt, "下载失败")
                 val body = resp.body ?: error("响应体为空")
                 val isPartial = resp.code == 206 && canResume
                 val startOffset = if (isPartial) existingBytes else 0L
@@ -1768,7 +1932,8 @@ class KodBoxApiClient {
     suspend fun downloadFileToStream(
         account: KodAccount,
         item: KodFileItem,
-        outputStreamProvider: () -> java.io.OutputStream?
+        outputStreamProvider: () -> java.io.OutputStream?,
+        onProgress: (bytesRead: Long, total: Long) -> Unit = { _, _ -> }
     ): Result<Long> = withContext(Dispatchers.IO) {
         hydrateAccountSession(account)
         runCatching {
@@ -1779,8 +1944,14 @@ class KodBoxApiClient {
             )
             val req = buildAuthedRequestBuilder(account, url).get().build()
             okHttpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) error("同步下载失败 (HTTP ${resp.code})")
+                verifyBinaryDownloadResponse(resp, item.normalizedExt, "同步下载失败")
                 val body = resp.body ?: error("响应体为空")
+                val responseLen = body.contentLength()
+                val expectedTotal = when {
+                    responseLen > 0L -> responseLen
+                    item.size > 0L -> item.size
+                    else -> -1L
+                }
                 val out = outputStreamProvider() ?: error("无法写入本地同步文件夹")
                 var total = 0L
                 body.byteStream().use { input ->
@@ -1791,6 +1962,7 @@ class KodBoxApiClient {
                             if (read == -1) break
                             output.write(buffer, 0, read)
                             total += read
+                            onProgress(total, if (expectedTotal > 0L) expectedTotal else total)
                         }
                         output.flush()
                     }
@@ -1883,7 +2055,10 @@ class KodBoxApiClient {
         okHttpClient.newCall(req).execute().use { resp ->
             val raw = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) error("服务器请求错误 (HTTP ${resp.code})")
-            return parseJsonObject(raw) ?: error("服务器返回非 JSON 数据")
+            val snippet = raw.trim().replace(Regex("\\s+"), " ").take(80)
+            return parseJsonObject(raw) ?: error(
+                if (snippet.isEmpty()) "服务器返回空响应 ($route)" else "服务器返回非 JSON 数据 ($snippet)"
+            )
         }
     }
 
@@ -1903,7 +2078,10 @@ class KodBoxApiClient {
         okHttpClient.newCall(req).execute().use { resp ->
             val raw = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) error("服务器操作失败 (HTTP ${resp.code})")
-            return parseJsonObject(raw) ?: error("服务器返回非 JSON 数据")
+            val snippet = raw.trim().replace(Regex("\\s+"), " ").take(80)
+            return parseJsonObject(raw) ?: error(
+                if (snippet.isEmpty()) "服务器返回空响应 ($route)" else "服务器返回非 JSON 数据 ($snippet)"
+            )
         }
     }
 
@@ -2081,25 +2259,9 @@ class KodBoxApiClient {
         return runCatching { JSONObject(trimmed) }.getOrNull()
     }
 
-    private fun isKodSuccess(json: JSONObject): Boolean {
-        val code = json.opt("code")
-        return when (code) {
-            is Boolean -> code
-            is Number -> code.toInt() == 1 || code.toInt() == 200
-            is String -> code.equals("true", ignoreCase = true) || code == "1" || code == "200"
-            else -> false
-        }
-    }
+    private fun isKodSuccess(json: JSONObject): Boolean = isKodSuccessJson(json)
 
-    private fun extractKodError(json: JSONObject, fallback: String): String {
-        val dataStr = json.opt("data") as? String
-        if (!dataStr.isNullOrBlank()) return dataStr
-        val infoStr = json.opt("info") as? String
-        if (!infoStr.isNullOrBlank()) return infoStr
-        val msgStr = json.opt("msg") as? String
-        if (!msgStr.isNullOrBlank()) return msgStr
-        return fallback
-    }
+    private fun extractKodError(json: JSONObject, fallback: String): String = extractKodErrorJson(json, fallback)
 
     private fun urlEncode(value: String): String = URLEncoder.encode(value, "UTF-8")
 

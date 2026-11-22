@@ -1,0 +1,6 @@
+{
+  "name": "KodNext",
+  "description": "私有部署 KodBox 网盘安卓客户端，采用 Nextcloud 风格交互设计并保留 KodBox 空间、标签、外链分享与离线下载等核心功能。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

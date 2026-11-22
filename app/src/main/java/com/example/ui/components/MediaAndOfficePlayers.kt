@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Forward10
+import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -554,11 +555,14 @@ fun KodPluginWebViewPreview(
     pluginUrl: String,
     onSelectPlugin: (KodPluginApp) -> Unit,
     onDownloadFallback: () -> Unit,
+    onSessionExpired: (String) -> Unit = {},
+    onReloginClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var loadProgress by remember(pluginUrl) { mutableIntStateOf(0) }
     var webError by remember(pluginUrl) { mutableStateOf<String?>(null) }
     var interceptedSpaUrl by remember(pluginUrl) { mutableStateOf<String?>(null) }
+    var interceptedLoginRedirect by remember(pluginUrl) { mutableStateOf(false) }
     var reloadNonce by remember { mutableIntStateOf(0) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
@@ -622,6 +626,7 @@ fun KodPluginWebViewPreview(
                     onClick = {
                         webError = null
                         interceptedSpaUrl = null
+                        interceptedLoginRedirect = false
                         reloadNonce += 1
                     },
                     modifier = Modifier.size(40.dp)
@@ -700,9 +705,17 @@ fun KodPluginWebViewPreview(
                                 val targetUrl = request?.url?.toString().orEmpty()
                                 val scheme = request?.url?.scheme?.lowercase().orEmpty()
                                 if (scheme != "http" && scheme != "https") return true
-                                if (request?.isForMainFrame == true && isKodBoxMainSpaUrl(targetUrl, account.serverUrl)) {
-                                    interceptedSpaUrl = targetUrl
-                                    return true
+                                if (request?.isForMainFrame == true) {
+                                    if (KodBoxApiClient.isWebLoginRedirectUrl(targetUrl, account.serverUrl)) {
+                                        interceptedLoginRedirect = true
+                                        interceptedSpaUrl = targetUrl
+                                        onSessionExpired("登录凭证已失效，无法加载在线预览，请重新登录")
+                                        return true
+                                    }
+                                    if (isKodBoxMainSpaUrl(targetUrl, account.serverUrl)) {
+                                        interceptedSpaUrl = targetUrl
+                                        return true
+                                    }
                                 }
                                 return false
                             }
@@ -713,9 +726,16 @@ fun KodPluginWebViewPreview(
                                 favicon: android.graphics.Bitmap?
                             ) {
                                 super.onPageStarted(view, url, favicon)
-                                if (!url.isNullOrBlank() && isKodBoxMainSpaUrl(url, account.serverUrl)) {
-                                    view?.stopLoading()
-                                    interceptedSpaUrl = url
+                                if (!url.isNullOrBlank()) {
+                                    if (KodBoxApiClient.isWebLoginRedirectUrl(url, account.serverUrl)) {
+                                        view?.stopLoading()
+                                        interceptedLoginRedirect = true
+                                        interceptedSpaUrl = url
+                                        onSessionExpired("登录凭证已失效，无法加载在线预览，请重新登录")
+                                    } else if (isKodBoxMainSpaUrl(url, account.serverUrl)) {
+                                        view?.stopLoading()
+                                        interceptedSpaUrl = url
+                                    }
                                 }
                             }
 
@@ -743,6 +763,7 @@ fun KodPluginWebViewPreview(
                         webView.tag = targetTag
                         webError = null
                         interceptedSpaUrl = null
+                        interceptedLoginRedirect = false
                         val headers = buildMap {
                             if (account.csrfToken.isNotBlank()) put("CSRF-Token", account.csrfToken)
                         }
@@ -777,23 +798,37 @@ fun KodPluginWebViewPreview(
                                 modifier = Modifier
                                     .size(56.dp)
                                     .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primaryContainer),
+                                    .background(
+                                        if (interceptedLoginRedirect) {
+                                            MaterialTheme.colorScheme.errorContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.primaryContainer
+                                        }
+                                    ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = Icons.Filled.Shield,
+                                    imageVector = if (interceptedLoginRedirect) Icons.Filled.LockReset else Icons.Filled.Shield,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
+                                    tint = if (interceptedLoginRedirect) {
+                                        MaterialTheme.colorScheme.onErrorContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
                                     modifier = Modifier.size(30.dp)
                                 )
                             }
                             Text(
-                                text = "已拦截网页端跳转",
+                                text = if (interceptedLoginRedirect) "登录凭证已失效" else "已拦截网页端跳转",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "「${selectedPlugin.title}」插件当前未就绪或尝试跳转至网盘 H5 网页端界面，已自动拦截以保持原生体验。",
+                                text = if (interceptedLoginRedirect) {
+                                    "当前账号登录状态已过期，服务器拒绝了「${selectedPlugin.title}」预览请求，请重新登录。"
+                                } else {
+                                    "「${selectedPlugin.title}」插件当前未就绪或尝试跳转至网盘 H5 网页端界面，已自动拦截以保持原生体验。"
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center
@@ -802,27 +837,36 @@ fun KodPluginWebViewPreview(
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                val nextPlugin = availablePlugins.firstOrNull {
-                                    !it.name.equals(selectedPlugin.name, ignoreCase = true)
-                                }
-                                if (nextPlugin != null) {
-                                    OutlinedButton(onClick = { onSelectPlugin(nextPlugin) }) {
-                                        Text("切换 ${nextPlugin.title}")
+                                if (interceptedLoginRedirect) {
+                                    Button(
+                                        onClick = onReloginClick,
+                                        modifier = Modifier.testTag("plugin_relogin_button")
+                                    ) {
+                                        Text("立即重新登录")
                                     }
                                 } else {
-                                    OutlinedButton(
-                                        onClick = {
-                                            interceptedSpaUrl = null
-                                            reloadNonce += 1
-                                        }
-                                    ) {
-                                        Text("重试加载")
+                                    val nextPlugin = availablePlugins.firstOrNull {
+                                        !it.name.equals(selectedPlugin.name, ignoreCase = true)
                                     }
-                                }
-                                Button(onClick = onDownloadFallback) {
-                                    Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("下载本地打开")
+                                    if (nextPlugin != null) {
+                                        OutlinedButton(onClick = { onSelectPlugin(nextPlugin) }) {
+                                            Text("切换 ${nextPlugin.title}")
+                                        }
+                                    } else {
+                                        OutlinedButton(
+                                            onClick = {
+                                                interceptedSpaUrl = null
+                                                reloadNonce += 1
+                                            }
+                                        ) {
+                                            Text("重试加载")
+                                        }
+                                    }
+                                    Button(onClick = onDownloadFallback) {
+                                        Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("下载本地打开")
+                                    }
                                 }
                             }
                         }

@@ -73,6 +73,15 @@ data class PreviewState(
     val errorMessage: String? = null
 )
 
+data class SessionExpiredNotice(
+    val accountId: String,
+    val serverUrl: String,
+    val siteName: String,
+    val username: String,
+    val reason: String,
+    val dialogDismissed: Boolean = false
+)
+
 data class KodUiState(
     val isHydrated: Boolean = false,
     val accounts: List<KodAccount> = emptyList(),
@@ -166,7 +175,8 @@ data class KodUiState(
     val renameDialogItem: KodFileItem? = null,
     val folderPickerState: FolderPickerState? = null,
     val isWorking: Boolean = false,
-    val serverHealthMessage: String? = null
+    val serverHealthMessage: String? = null,
+    val sessionExpiredNotice: SessionExpiredNotice? = null
 ) {
     val isInSelectionMode: Boolean
         get() = selectedPaths.isNotEmpty()

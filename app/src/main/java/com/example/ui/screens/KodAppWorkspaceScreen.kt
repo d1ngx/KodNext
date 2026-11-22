@@ -12,17 +12,27 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.Button
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -41,9 +51,13 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -64,11 +78,14 @@ fun KodAppWorkspaceScreen(
     account: KodAccount,
     app: KodWorkspaceApp,
     onCopyUrl: (String) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onSessionExpired: (String) -> Unit = {},
+    onReloginClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var loadProgress by remember(app.id) { mutableIntStateOf(0) }
     var webError by remember(app.id) { mutableStateOf<String?>(null) }
+    var loginRedirectDetected by remember(app.id) { mutableStateOf(false) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
     val targetUrl = remember(account.id, app.launchUrl, account.accessToken, account.csrfToken) {
@@ -237,8 +254,32 @@ fun KodAppWorkspaceScreen(
                                     view: WebView?,
                                     request: WebResourceRequest?
                                 ): Boolean {
+                                    val urlStr = request?.url?.toString().orEmpty()
                                     val scheme = request?.url?.scheme?.lowercase().orEmpty()
-                                    return scheme != "http" && scheme != "https"
+                                    if (scheme != "http" && scheme != "https") return true
+                                    if (request?.isForMainFrame == true &&
+                                        KodBoxApiClient.isWebLoginRedirectUrl(urlStr, account.serverUrl)
+                                    ) {
+                                        loginRedirectDetected = true
+                                        onSessionExpired("网页端提示当前登录凭证已失效，请重新登录")
+                                        return true
+                                    }
+                                    return false
+                                }
+
+                                override fun onPageStarted(
+                                    view: WebView?,
+                                    url: String?,
+                                    favicon: android.graphics.Bitmap?
+                                ) {
+                                    super.onPageStarted(view, url, favicon)
+                                    if (!url.isNullOrBlank() &&
+                                        KodBoxApiClient.isWebLoginRedirectUrl(url, account.serverUrl)
+                                    ) {
+                                        view?.stopLoading()
+                                        loginRedirectDetected = true
+                                        onSessionExpired("网页端提示当前登录凭证已失效，请重新登录")
+                                    }
                                 }
 
                                 override fun onReceivedError(
@@ -263,6 +304,63 @@ fun KodAppWorkspaceScreen(
                     },
                     modifier = Modifier.fillMaxSize()
                 )
+
+                if (loginRedirectDetected) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.background)
+                            .padding(24.dp)
+                            .testTag("workspace_login_redirect_guard"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        ElevatedCard(
+                            shape = RoundedCornerShape(22.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(56.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.errorContainer),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.LockReset,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                                        modifier = Modifier.size(30.dp)
+                                    )
+                                }
+                                Text(
+                                    text = "登录凭证已失效",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "网页端要求重新登录，请使用客户端重新验证账号身份。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Button(
+                                    onClick = onReloginClick,
+                                    modifier = Modifier.testTag("workspace_relogin_button")
+                                ) {
+                                    Text("立即重新登录")
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

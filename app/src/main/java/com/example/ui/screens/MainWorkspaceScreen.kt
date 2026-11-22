@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Person
@@ -674,12 +675,71 @@ fun MainWorkspaceScreen(
                     }
                 }
             ) { innerPadding ->
-                Box(
+                Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
                 ) {
-                    when {
+                    AnimatedVisibility(visible = state.sessionExpiredNotice != null) {
+                        val notice = state.sessionExpiredNotice
+                        if (notice != null) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("session_expired_banner")
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.WarningAmber,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "登录凭证已失效",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = notice.reason,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    TextButton(
+                                        onClick = { viewModel.reloginExpiredAccount(openQrDirectly = false) },
+                                        modifier = Modifier.testTag("session_expired_banner_relogin_button")
+                                    ) {
+                                        Text(
+                                            text = "重新登录",
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    ) {
+                        when {
                         state.showSharedScreen -> SharedTabContent(
                             state = state,
                             onSelectSubTab = { subTab -> viewModel.selectShareSubTab(subTab) },
@@ -785,6 +845,7 @@ fun MainWorkspaceScreen(
                             onOpenAppHub = { viewModel.toggleAppHubSheet(true) },
                             onCopyDiagnostics = { viewModel.copyText("KodNext 诊断信息", it) }
                         )
+                    }
                     }
                 }
             }

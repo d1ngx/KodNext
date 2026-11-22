@@ -18,6 +18,15 @@ sealed interface KodQrPayload {
     ) : KodQrPayload
 
     /**
+     * Official KodBox Account Center mobile login QR payload (`https://host/#?loginAppID=...`),
+     * exchanged via `POST /?plugin/client/loginApp&HTTP_X_PLATFORM_1=...` to obtain a fresh `accessToken`.
+     */
+    data class AppLoginId(
+        val serverUrl: String,
+        val loginAppId: String
+    ) : KodQrPayload
+
+    /**
      * A server URL containing dynamic QR login / callback parameters (e.g. `?user/index/qrcode&...`,
      * `?user/view/call&...`, `?s=...`, short links, or signed parameters) that must be exchanged with the server.
      */
@@ -55,15 +64,35 @@ object KodQrLoginParser {
     )
 
     private val primaryTokenKeys = listOf(
-        "accesstoken", "logintoken", "usertoken", "kodtoken", "authtoken",
-        "apptoken", "sessiontoken", "token", "kodsessionid", "sessionid",
-        "sid", "ticket", "utoken", "secret"
+        "accesstoken", "logintoken", "safetoken", "usertoken", "kodtoken", "authtoken",
+        "apptoken", "sessiontoken", "scantoken", "token", "kodsessionid", "sessionid",
+        "sid", "ticket", "utoken", "secret", "logincode", "authcode", "scancode",
+        "loginkey", "authkey", "qrkey"
     )
 
-    private val shortTokenKeys = listOf("tk", "at", "lt", "t", "k", "a", "auth")
+    private val shortTokenKeys = listOf("tk", "at", "lt", "st", "t", "k", "a", "auth")
 
-    private val encodedContainerKeys = listOf(
-        "data", "info", "payload", "param", "params", "content", "state", "d", "p", "q"
+    private val appLoginIdKeys = listOf("loginappid", "apploginid")
+
+    private val wrapperExchangeKeys = listOf(
+        "code", "qrcode", "key", "sign", "signature", "hash", "qrhash",
+        "uuid", "qid", "verify", "verifycode", "credential", "s", "c", "v", "id"
+    )
+
+    private val nonTokenMetadataKeys = setOf(
+        "url", "server", "serverurl", "host", "serverhost", "site", "siteurl",
+        "apiurl", "appurl", "domain", "baseurl", "kodhost", "kodurl", "link",
+        "href", "address", "addr", "api", "origin", "redirect", "callback",
+        "app", "type", "action", "platform", "os", "lang", "language", "version",
+        "appversion", "ver", "from", "source", "channel", "client", "device",
+        "brand", "system", "httpxplatform1", "username", "name", "user",
+        "account", "nickname", "title", "password", "pwd", "pass", "passwd"
+    )
+
+    private val knownNonTokenValues = setOf(
+        "kodbox", "kodcloud", "kodexplorer", "kodnext", "android", "ios",
+        "web", "pc", "app", "login", "applogin", "qrlogin", "qrcode",
+        "download", "scan", "auth", "true", "false", "null", "undefined"
     )
 
     private val trivialFragments = setOf(
@@ -74,26 +103,65 @@ object KodQrLoginParser {
     fun parse(rawInput: String): KodQrPayload = parseInternal(rawInput, depth = 0)
 
     /**
+     * Extracts candidate one-time login/exchange tokens or codes from a QR callback URL
+     * (used as fallback when visiting an AuthUrl directly does not return an authenticated user).
+     */
+    fun extractCandidateExchangeTokens(rawUrl: String): List<String> {
+        val parsed = rawUrl.trim().toHttpUrlOrNull() ?: return emptyList()
+        val params = linkedMapOf<String, String>()
+        parsed.encodedQuery?.takeIf { it.isNotBlank() }?.let { params.putAll(parseRawQueryParams(it)) }
+        val frag = parsed.encodedFragment.orEmpty()
+        if (frag.contains("?")) {
+            params.putAll(parseRawQueryParams(frag.substringAfter("?")))
+        } else if (frag.contains("=")) {
+            params.putAll(parseRawQueryParams(frag))
+        }
+        val candidates = linkedSetOf<String>()
+        for (key in appLoginIdKeys + primaryTokenKeys + shortTokenKeys + wrapperExchangeKeys) {
+            val v = params[key]?.trim()
+            if (!v.isNullOrBlank() && v.length >= 6 && v.lowercase() !in knownNonTokenValues && looksLikeTokenString(v)) {
+                candidates.add(v)
+            }
+        }
+        for ((k, v) in params) {
+            if (k !in nonTokenMetadataKeys && v.length >= 20 && v.lowercase() !in knownNonTokenValues && looksLikeTokenString(v)) {
+                candidates.add(v)
+            }
+        }
+        return candidates.toList()
+    }
+
+    /**
      * Produces a safe, non-secret diagnostic hint describing the QR payload structure
-     * (host + route/keys only, never printing token values).
+     * (host + route + param names with lengths only, never printing token values).
      */
     fun describeSafely(rawInput: String): String {
         val raw = rawInput.trim()
         if (raw.isEmpty()) return "空内容"
         if (raw.startsWith("{") && raw.endsWith("}")) {
             val obj = runCatching { JSONObject(raw) }.getOrNull()
-            val keys = obj?.keys()?.asSequence()?.take(5)?.joinToString(",")
-            return if (!keys.isNullOrBlank()) "JSON($keys)" else "JSON"
+            val keys = obj?.keys()?.asSequence()?.take(6)?.map { k ->
+                val len = obj.optString(k).length
+                "$k($len)"
+            }?.joinToString(",")
+            return if (!keys.isNullOrBlank()) "JSON{$keys}" else "JSON"
         }
         val parsed = raw.toHttpUrlOrNull()
         if (parsed != null) {
             val pathPart = parsed.encodedPath.takeIf { it != "/" }.orEmpty()
             val queryKeys = parsed.encodedQuery.orEmpty()
                 .split("&")
-                .map { it.substringBefore("=").take(24) }
                 .filter { it.isNotBlank() }
-                .take(4)
-                .joinToString("&")
+                .take(5)
+                .joinToString("&") { part ->
+                    if (part.contains("=")) {
+                        val k = part.substringBefore("=").take(20)
+                        val vLen = part.substringAfter("=").length
+                        "$k($vLen)"
+                    } else {
+                        part.take(24)
+                    }
+                }
             val fragHint = parsed.encodedFragment?.takeIf { it.isNotBlank() }?.let { "#${it.substringBefore("=").take(18)}" }.orEmpty()
             return buildString {
                 append(parsed.host)
@@ -135,7 +203,12 @@ object KodQrLoginParser {
             return parseHttpUrlPayload(raw, depth)
         }
 
-        // 5. Base64-encoded JSON or URL payload
+        // 5. Key=value query string decoded from Base64 (e.g. "url=https://...&token=...")
+        if (depth > 0 && raw.contains("=") && (raw.contains("http://", true) || raw.contains("https://", true))) {
+            parseKeyValuePayload(raw, depth)?.let { return it }
+        }
+
+        // 6. Base64-encoded JSON, URL, or key=value payload
         if (depth < 2 && !raw.contains(" ") && raw.length >= 16) {
             tryDecodeBase64Payload(raw)?.let { decoded ->
                 val nested = parseInternal(decoded, depth = depth + 1)
@@ -143,7 +216,7 @@ object KodQrLoginParser {
             }
         }
 
-        // 6. Bare hostname / IP:port (e.g., demo.box.kodcloud.com)
+        // 7. Bare hostname / IP:port (e.g., demo.box.kodcloud.com)
         val normalizedBare = KodFormatters.normalizeServerUrl(raw).getOrNull()
         if (normalizedBare != null && looksLikeHost(raw)) {
             return KodQrPayload.ServerOnly(normalizedBare)
@@ -155,27 +228,57 @@ object KodQrLoginParser {
         )
     }
 
+    private fun parseKeyValuePayload(raw: String, depth: Int): KodQrPayload? {
+        val params = parseRawQueryParams(raw)
+        val serverRaw = findEmbeddedServerUrl(params) ?: return null
+        val server = extractBaseServerUrl(serverRaw) ?: return null
+        val appLoginId = extractAppLoginId(params)
+        if (!appLoginId.isNullOrBlank()) {
+            return KodQrPayload.AppLoginId(server, appLoginId)
+        }
+        val token = extractTokenFromNormalizedMap(params, includeWrapperExchangeKeys = true)
+        if (!token.isNullOrBlank()) {
+            return KodQrPayload.TokenLogin(server, token)
+        }
+        val user = params["username"] ?: params["name"] ?: params["user"] ?: params["account"]
+        val pwd = params["password"] ?: params["pwd"] ?: params["pass"]
+        if (!user.isNullOrBlank() && !pwd.isNullOrBlank()) {
+            return KodQrPayload.CredentialsLogin(server, user, pwd)
+        }
+        if (depth < 2 && (serverRaw.contains("?") || serverRaw.contains("#"))) {
+            val nested = parseHttpUrlPayload(serverRaw, depth + 1)
+            if (nested !is KodQrPayload.Unsupported) return nested
+        }
+        return KodQrPayload.ServerOnly(server)
+    }
+
     private fun parseJsonPayload(raw: String, depth: Int): KodQrPayload? {
         val root = runCatching { JSONObject(raw) }.getOrNull() ?: return null
         val flat = linkedMapOf<String, String>()
         flattenJsonStrings(root, flat, maxDepth = 3)
         if (flat.isEmpty()) return null
 
-        val urlCandidate = urlKeys.firstNotNullOfOrNull { key -> flat[key]?.takeIf { it.isNotBlank() } }
-            ?: flat.values.firstOrNull { it.startsWith("http://", true) || it.startsWith("https://", true) }
-            ?: return null
+        val urlCandidate = findEmbeddedServerUrl(flat) ?: return null
 
-        // Check if urlCandidate itself already embeds a token or auth route
+        // Check if urlCandidate itself already embeds a token, appLoginId, or credentials
         if (depth < 2 && (urlCandidate.contains("?") || urlCandidate.contains("#"))) {
             val nestedFromUrl = parseHttpUrlPayload(urlCandidate, depth + 1)
-            if (nestedFromUrl is KodQrPayload.TokenLogin || nestedFromUrl is KodQrPayload.CredentialsLogin) {
+            if (nestedFromUrl is KodQrPayload.AppLoginId ||
+                nestedFromUrl is KodQrPayload.TokenLogin ||
+                nestedFromUrl is KodQrPayload.CredentialsLogin
+            ) {
                 return nestedFromUrl
             }
         }
 
         val baseServer = extractBaseServerUrl(urlCandidate) ?: return null
 
-        val token = extractTokenFromNormalizedMap(flat)
+        val appLoginId = extractAppLoginId(flat)
+        if (!appLoginId.isNullOrBlank()) {
+            return KodQrPayload.AppLoginId(baseServer, appLoginId)
+        }
+
+        val token = extractTokenFromNormalizedMap(flat, includeWrapperExchangeKeys = true)
         if (!token.isNullOrBlank()) {
             return KodQrPayload.TokenLogin(baseServer, token)
         }
@@ -196,10 +299,10 @@ object KodQrLoginParser {
             }
         }
 
-        // Check if any Base64 container inside JSON holds the real token/URL
+        // Check if ANY Base64 field inside JSON holds the real token/URL
         if (depth < 2) {
-            for (k in encodedContainerKeys) {
-                val encodedVal = flat[k] ?: continue
+            for ((_, encodedVal) in flat) {
+                if (encodedVal.length < 16 || encodedVal.startsWith("http://", true) || encodedVal.startsWith("https://", true)) continue
                 val decoded = tryDecodeBase64Payload(encodedVal) ?: continue
                 val nested = parseInternal(decoded, depth + 1)
                 if (nested is KodQrPayload.TokenLogin || nested is KodQrPayload.CredentialsLogin || nested is KodQrPayload.AuthUrl) {
@@ -243,7 +346,7 @@ object KodQrLoginParser {
             val idx = part.indexOf(':')
             if (idx > 0) {
                 val key = normalizeKey(part.substring(0, idx))
-                val value = percentDecodePreservePlus(part.substring(idx + 1))
+                val value = percentDecodeRepeatedly(part.substring(idx + 1))
                 map[key] = value
             }
         }
@@ -271,12 +374,17 @@ object KodQrLoginParser {
 
         val query = raw.substringAfter("?", "")
         val params = if (query.isNotBlank()) parseRawQueryParams(query) else emptyMap()
-        val serverRaw = urlKeys.firstNotNullOfOrNull { params[it] }
+        val serverRaw = findEmbeddedServerUrl(params)
             ?: afterScheme.substringBefore("?").takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
             ?: return null
         val server = extractBaseServerUrl(serverRaw) ?: return null
 
-        val token = extractTokenFromNormalizedMap(params)
+        val appLoginId = extractAppLoginId(params)
+        if (!appLoginId.isNullOrBlank()) {
+            return KodQrPayload.AppLoginId(server, appLoginId)
+        }
+
+        val token = extractTokenFromNormalizedMap(params, includeWrapperExchangeKeys = true)
         if (!token.isNullOrBlank()) {
             return KodQrPayload.TokenLogin(server, token)
         }
@@ -299,7 +407,7 @@ object KodQrLoginParser {
         val parsed = raw.toHttpUrlOrNull()
             ?: return KodQrPayload.Unsupported(raw, "二维码中的网址格式无效")
 
-        // Collect all query & fragment params with normalized keys (preserving literal '+')
+        // Collect all query & fragment params with normalized keys (preserving literal '+' and unwrapping double encoding)
         val params = linkedMapOf<String, String>()
         val rawQuery = parsed.encodedQuery.orEmpty()
         if (rawQuery.isNotBlank()) {
@@ -312,18 +420,25 @@ object KodQrLoginParser {
             params.putAll(parseRawQueryParams(rawFragment))
         }
 
-        // Check if this is a wrapper/download URL embedding the real self-hosted server in a query param
-        val embeddedServerCandidate = urlKeys.firstNotNullOfOrNull { key ->
-            params[key]?.takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
-        }
+        // Check if this is a wrapper/download URL embedding the real self-hosted server in any param
+        val embeddedServerCandidate = findEmbeddedServerUrl(params)
+        val outerBaseServer = buildBaseServerUrl(parsed.scheme, parsed.host, parsed.port, parsed.encodedPath)
         val baseServer = if (embeddedServerCandidate != null) {
-            extractBaseServerUrl(embeddedServerCandidate) ?: buildBaseServerUrl(parsed.scheme, parsed.host, parsed.port, parsed.encodedPath)
+            extractBaseServerUrl(embeddedServerCandidate) ?: outerBaseServer
         } else {
-            buildBaseServerUrl(parsed.scheme, parsed.host, parsed.port, parsed.encodedPath)
+            outerBaseServer
+        }
+        val isExternalWrapper = embeddedServerCandidate != null &&
+            !baseServer.equals(outerBaseServer, ignoreCase = true)
+
+        // 0. Official KodBox Account Center mobile login QR (`https://host/#?loginAppID=...`)
+        val appLoginId = extractAppLoginId(params)
+        if (!appLoginId.isNullOrBlank()) {
+            return KodQrPayload.AppLoginId(baseServer, appLoginId)
         }
 
         // 1. Direct token in query or fragment params
-        val token = extractTokenFromNormalizedMap(params)
+        val token = extractTokenFromNormalizedMap(params, includeWrapperExchangeKeys = isExternalWrapper)
         if (!token.isNullOrBlank()) {
             return KodQrPayload.TokenLogin(baseServer, token)
         }
@@ -334,43 +449,56 @@ object KodQrLoginParser {
             return KodQrPayload.TokenLogin(baseServer, fragmentPathToken)
         }
 
-        // 3. Base64-encoded JSON/query/URL inside any query parameter or fragment
-        if (depth < 2) {
-            for (k in encodedContainerKeys) {
-                val encodedVal = params[k] ?: continue
-                val decoded = tryDecodeBase64Payload(encodedVal) ?: continue
-                val nested = parseInternal(decoded, depth + 1)
-                if (nested is KodQrPayload.TokenLogin || nested is KodQrPayload.CredentialsLogin || nested is KodQrPayload.AuthUrl) {
-                    return nested
-                }
-            }
-            if (rawFragment.length >= 16 && !rawFragment.contains("/")) {
-                tryDecodeBase64Payload(rawFragment)?.let { decoded ->
-                    val nested = parseInternal(decoded, depth + 1)
-                    if (nested is KodQrPayload.TokenLogin || nested is KodQrPayload.CredentialsLogin || nested is KodQrPayload.AuthUrl) {
-                        return nested
-                    }
-                }
-            }
-        }
-
-        // 4. Direct credentials in query/fragment
-        val user = params["username"] ?: params["name"] ?: params["user"] ?: params["account"]
-        val pwd = params["password"] ?: params["pwd"] ?: params["pass"]
-        if (!user.isNullOrBlank() && !pwd.isNullOrBlank()) {
-            return KodQrPayload.CredentialsLogin(baseServer, user, pwd)
-        }
-
-        // 5. Embedded URL parameter itself may be an auth callback URL
-        if (depth < 2 && embeddedServerCandidate != null && (embeddedServerCandidate.contains("?") || embeddedServerCandidate.contains("#"))) {
+        // 3. Embedded URL parameter itself may be an auth callback URL or carry a token (check BEFORE wrapper fallback!)
+        if (depth < 2 && embeddedServerCandidate != null &&
+            (embeddedServerCandidate.contains("?") || embeddedServerCandidate.contains("#"))
+        ) {
             val nested = parseHttpUrlPayload(embeddedServerCandidate, depth + 1)
             if (nested !is KodQrPayload.Unsupported && nested !is KodQrPayload.ServerOnly) {
                 return nested
             }
         }
 
-        // 6. Any HTTP(S) URL carrying query params, non-root route path, or non-trivial fragment
-        // should be attempted as a dynamic AuthUrl exchange instead of prematurely discarding it!
+        // 4. Base64-encoded JSON/query/URL inside ANY query parameter or fragment
+        if (depth < 2) {
+            for ((_, encodedVal) in params) {
+                if (encodedVal.length < 16 || encodedVal.startsWith("http://", true) || encodedVal.startsWith("https://", true)) continue
+                val decoded = tryDecodeBase64Payload(encodedVal) ?: continue
+                val nested = parseInternal(decoded, depth + 1)
+                if (nested is KodQrPayload.AppLoginId || nested is KodQrPayload.TokenLogin || nested is KodQrPayload.CredentialsLogin || nested is KodQrPayload.AuthUrl) {
+                    return nested
+                }
+            }
+            if (rawFragment.length >= 16 && !rawFragment.contains("/")) {
+                tryDecodeBase64Payload(rawFragment)?.let { decoded ->
+                    val nested = parseInternal(decoded, depth + 1)
+                    if (nested is KodQrPayload.AppLoginId || nested is KodQrPayload.TokenLogin || nested is KodQrPayload.CredentialsLogin || nested is KodQrPayload.AuthUrl) {
+                        return nested
+                    }
+                }
+            }
+        }
+
+        // 5. Direct credentials in query/fragment
+        val user = params["username"] ?: params["name"] ?: params["user"] ?: params["account"]
+        val pwd = params["password"] ?: params["pwd"] ?: params["pass"]
+        if (!user.isNullOrBlank() && !pwd.isNullOrBlank()) {
+            return KodQrPayload.CredentialsLogin(baseServer, user, pwd)
+        }
+
+        // 6. If this is an external download/wrapper URL (e.g. kodcloud.com/download/?url=https://myserver)
+        // with NO token or exchange code anywhere, treat it honestly as ServerOnly instead of calling kodcloud.com
+        if (isExternalWrapper) {
+            val hasAnyOpaqueExtra = params.any { (k, v) ->
+                k !in nonTokenMetadataKeys && v.length >= 6 && v.lowercase() !in knownNonTokenValues
+            }
+            if (!hasAnyOpaqueExtra) {
+                return KodQrPayload.ServerOnly(baseServer)
+            }
+        }
+
+        // 7. Any HTTP(S) URL carrying query params, non-root route path, or non-trivial fragment
+        // should be attempted as a dynamic AuthUrl exchange instead of prematurely discarding it
         val cleanPath = parsed.encodedPath.trimEnd('/')
         val hasNonRootPath = cleanPath.isNotEmpty() && !cleanPath.equals("/index.php", ignoreCase = true)
         val hasQuery = rawQuery.isNotBlank()
@@ -384,17 +512,65 @@ object KodQrLoginParser {
         return KodQrPayload.ServerOnly(baseServer)
     }
 
-    private fun extractTokenFromNormalizedMap(params: Map<String, String>): String? {
+    private fun findEmbeddedServerUrl(params: Map<String, String>): String? {
+        for (key in urlKeys) {
+            val rawVal = params[key]?.trim() ?: continue
+            val decoded = percentDecodeRepeatedly(rawVal)
+            if (decoded.startsWith("http://", true) || decoded.startsWith("https://", true)) {
+                return decoded
+            }
+        }
+        for ((_, rawVal) in params) {
+            val decoded = percentDecodeRepeatedly(rawVal.trim())
+            if (decoded.startsWith("http://", true) || decoded.startsWith("https://", true)) {
+                return decoded
+            }
+        }
+        return null
+    }
+
+    private fun extractAppLoginId(params: Map<String, String>): String? {
+        for (key in appLoginIdKeys) {
+            val v = params[key]?.trim()
+            if (!v.isNullOrBlank() && v.length >= 8 && v.lowercase() !in knownNonTokenValues) {
+                return v
+            }
+        }
+        return null
+    }
+
+    private fun extractTokenFromNormalizedMap(
+        params: Map<String, String>,
+        includeWrapperExchangeKeys: Boolean = false
+    ): String? {
         for (key in primaryTokenKeys) {
             val v = params[key]?.trim()
-            if (!v.isNullOrBlank() && v.length >= 6 && !v.equals("null", true) && !v.equals("undefined", true)) {
+            if (!v.isNullOrBlank() && v.length >= 6 && v.lowercase() !in knownNonTokenValues) {
                 return v
             }
         }
         for (key in shortTokenKeys) {
             val v = params[key]?.trim()
-            if (!v.isNullOrBlank() && v.length >= 16 && looksLikeTokenString(v)) {
+            if (!v.isNullOrBlank() && v.length >= 16 && v.lowercase() !in knownNonTokenValues && looksLikeTokenString(v)) {
                 return v
+            }
+        }
+        if (includeWrapperExchangeKeys) {
+            for (key in wrapperExchangeKeys) {
+                val v = params[key]?.trim()
+                if (!v.isNullOrBlank() && v.length >= 10 && v.lowercase() !in knownNonTokenValues && looksLikeTokenString(v)) {
+                    return v
+                }
+            }
+            for ((k, v) in params) {
+                if (k !in nonTokenMetadataKeys &&
+                    v.length >= 24 &&
+                    v.lowercase() !in knownNonTokenValues &&
+                    looksLikeTokenString(v) &&
+                    tryDecodeBase64Payload(v) == null
+                ) {
+                    return v
+                }
             }
         }
         return null
@@ -449,13 +625,23 @@ object KodQrLoginParser {
             if (pair.contains("=")) {
                 val rawKey = percentDecodePreservePlus(pair.substringBefore("="))
                 val normKey = normalizeKey(rawKey)
-                val value = percentDecodePreservePlus(pair.substringAfter("=")).trim()
+                val value = percentDecodeRepeatedly(pair.substringAfter("=")).trim()
                 if (normKey.isNotBlank() && value.isNotBlank()) {
                     map[normKey] = value
                 }
             }
         }
         return map
+    }
+
+    private fun percentDecodeRepeatedly(input: String, maxPasses: Int = 2): String {
+        var current = input
+        repeat(maxPasses) {
+            val next = percentDecodePreservePlus(current)
+            if (next == current) return current
+            current = next
+        }
+        return current
     }
 
     /**
@@ -494,11 +680,14 @@ object KodQrLoginParser {
             else -> cleaned
         }
         val decoded = padded.decodeBase64()?.utf8()?.trim() ?: return null
+        val looksLikeKeyValue = decoded.contains("=") &&
+            (decoded.contains("http://", true) || decoded.contains("https://", true))
         return if (decoded.startsWith("{") ||
             decoded.startsWith("http://", true) ||
             decoded.startsWith("https://", true) ||
             decoded.startsWith("kod", true) ||
-            decoded.startsWith("nc://", true)
+            decoded.startsWith("nc://", true) ||
+            looksLikeKeyValue
         ) {
             decoded
         } else {

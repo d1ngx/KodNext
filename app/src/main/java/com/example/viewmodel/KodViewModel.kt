@@ -61,6 +61,7 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
     private var transfersHydrated: Boolean = false
     private var previousCompletedUploadIds: Set<String> = emptySet()
     private var previousFailedTransferIds: Set<String> = emptySet()
+    private var lastResumeSessionCheckAtMs: Long = 0L
 
     private val filesCoordinator = KodFilesCoordinator(
         scope = viewModelScope,
@@ -107,8 +108,20 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
     init {
         runStartupMigrations()
         observeSessionAndPreferences()
+        observeSessionExpiredEvents()
         observeRoomSyncAndTransfers()
         syncAndTransferCoordinator.startRealtimeSyncWatcher()
+    }
+
+    private fun observeSessionExpiredEvents() {
+        viewModelScope.launch {
+            container.apiClient.sessionExpiredEvents.collect { event ->
+                val active = _uiState.value.activeAccount ?: return@collect
+                if (active.id == event.accountId) {
+                    sessionCoordinator.onSessionExpired(active, event.reason)
+                }
+            }
+        }
     }
 
     private fun runStartupMigrations() {
@@ -192,7 +205,11 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
                         transfers = scopedTransfers
                     )
                 }
-                val isBatchSyncRunning = _uiState.value.activeSyncingRuleIds.isNotEmpty()
+                val recentlyFinishedSyncBatch =
+                    System.currentTimeMillis() - syncAndTransferCoordinator.lastSyncBatchFinishedAtMs < 3_500L
+                val isBatchSyncRunning = _uiState.value.activeSyncingRuleIds.isNotEmpty() ||
+                    container.syncRepository.hasAnyRunningSync() ||
+                    recentlyFinishedSyncBatch
                 if (newlyCompletedUploads.isNotEmpty() && !isBatchSyncRunning) {
                     filesCoordinator.refreshCurrentDirectory()
                     val first = newlyCompletedUploads.first()
@@ -228,6 +245,21 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
     fun switchAccount(account: KodAccount) = sessionCoordinator.switchAccount(account)
     fun logoutAccount(account: KodAccount) = sessionCoordinator.logoutAccount(account)
     fun refreshAccountQuota(accountOverride: KodAccount? = null) = sessionCoordinator.refreshAccountQuota(accountOverride)
+    fun checkSessionOnResume() {
+        val state = _uiState.value
+        val account = state.activeAccount ?: return
+        if (!state.isHydrated || state.showAddAccountLogin || state.showQrScanner || state.sessionExpiredNotice != null) return
+        val now = System.currentTimeMillis()
+        if (now - lastResumeSessionCheckAtMs < 30_000L) return
+        lastResumeSessionCheckAtMs = now
+        sessionCoordinator.refreshAccountQuota(account)
+    }
+    fun reportSessionExpired(reason: String) {
+        val account = _uiState.value.activeAccount ?: return
+        sessionCoordinator.onSessionExpired(account, reason)
+    }
+    fun dismissSessionExpiredDialog() = sessionCoordinator.dismissSessionExpiredDialog()
+    fun reloginExpiredAccount(openQrDirectly: Boolean = false) = sessionCoordinator.reloginExpiredAccount(openQrDirectly)
     fun updatePreferences(transform: (AppPreferences) -> AppPreferences) = sessionCoordinator.updatePreferences(transform)
     fun setThemePreference(pref: ThemePreference) = sessionCoordinator.setThemePreference(pref)
     fun openSettings(show: Boolean) = sessionCoordinator.openSettings(show)

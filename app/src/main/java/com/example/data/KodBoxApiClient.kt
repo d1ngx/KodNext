@@ -20,6 +20,9 @@ import com.example.model.ShareAccessMode
 import com.example.model.SortField
 import com.example.model.SortOrder
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -35,9 +38,18 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.net.URI
 import java.net.URLEncoder
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+
+data class SessionExpiredEvent(
+    val accountId: String,
+    val serverUrl: String,
+    val siteName: String,
+    val username: String,
+    val reason: String
+)
 
 /**
  * Real KodBox HTTP API client communicating directly with self-hosted KodBox instances
@@ -131,16 +143,115 @@ class KodBoxApiClient {
         }
 
         /**
-         * Detects authentication/session expiration errors so WorkManager workers fail fast
-         * instead of looping on Result.retry().
+         * Detects KodBox JSON auth/session expiration responses (e.g. `code: 10001`, `code: 10002`,
+         * or `code: false` with a login-expired message).
          */
-        fun isAuthFailure(error: Throwable?): Boolean {
-            val msg = error?.message.orEmpty()
-            return msg.contains("HTTP 401", ignoreCase = true) ||
-                msg.contains("HTTP 403", ignoreCase = true) ||
-                msg.contains("登录", ignoreCase = true) && (msg.contains("过期") || msg.contains("失效") || msg.contains("未登录") || msg.contains("请先")) ||
-                msg.contains("not login", ignoreCase = true) ||
-                msg.contains("accessToken", ignoreCase = true) && msg.contains("invalid", ignoreCase = true)
+        fun isKodAuthErrorJson(json: JSONObject?): Boolean {
+            if (json == null || isKodSuccessJson(json)) return false
+            val codeStr = json.opt("code")?.toString()?.trim().orEmpty()
+            if (codeStr == "10001" || codeStr == "10002" || codeStr == "401") return true
+            val detail = extractKodErrorJson(json, "")
+            return isAuthFailureMessage(detail)
+        }
+
+        /**
+         * Detects authentication/session expiration messages across KodBox versions and HTTP layers.
+         * Intentionally avoids generic 403 / file-permission errors so read-only folders do not
+         * falsely trigger a session-expired dialog.
+         */
+        fun isAuthFailureMessage(message: String): Boolean {
+            val msg = message.trim()
+            if (msg.isEmpty()) return false
+            val lower = msg.lowercase(Locale.ROOT)
+            if (lower.contains("http 401") ||
+                lower.contains("unauthorized") ||
+                lower.contains("not login") ||
+                lower.contains("login required") ||
+                lower.contains("please login") ||
+                lower.contains("token expired") ||
+                lower.contains("token invalid") ||
+                lower.contains("invalid token") ||
+                lower.contains("code 10001") ||
+                lower.contains("10001")
+            ) {
+                return true
+            }
+            val mentionsToken = lower.contains("accesstoken") || lower.contains("access_token") || lower.contains("token")
+            if (mentionsToken && (lower.contains("invalid") || lower.contains("expired") || msg.contains("失效") || msg.contains("过期") || msg.contains("无效"))) {
+                return true
+            }
+            if (msg.contains("未登录") || msg.contains("请先登录") || msg.contains("请重新登录")) {
+                return true
+            }
+            if (msg.contains("登录") && (msg.contains("过期") || msg.contains("失效") || msg.contains("超时") || msg.contains("异常"))) {
+                return true
+            }
+            if ((msg.contains("凭证") || msg.contains("会话")) && (msg.contains("失效") || msg.contains("过期") || msg.contains("无效") || msg.contains("未生效"))) {
+                return true
+            }
+            return false
+        }
+
+        /**
+         * Detects authentication/session expiration errors so WorkManager workers fail fast
+         * and UI immediately notifies the user to re-authenticate.
+         */
+        fun isAuthFailure(error: Throwable?): Boolean = isAuthFailureMessage(error?.message.orEmpty())
+
+        /**
+         * Detects whether a WebView URL has redirected to the KodBox web login page on the same host.
+         */
+        fun isWebLoginRedirectUrl(url: String, serverUrl: String): Boolean {
+            if (url.isBlank() || serverUrl.isBlank()) return false
+            return runCatching {
+                val target = URI(url)
+                val server = URI(serverUrl)
+                val targetHost = target.host?.lowercase(Locale.ROOT).orEmpty()
+                val serverHost = server.host?.lowercase(Locale.ROOT).orEmpty()
+                if (targetHost.isBlank() || targetHost != serverHost) return false
+
+                val path = target.path.orEmpty().lowercase(Locale.ROOT)
+                val query = target.rawQuery.orEmpty().lowercase(Locale.ROOT)
+                val fragment = target.fragment.orEmpty().lowercase(Locale.ROOT)
+
+                if (query.contains("plugin/") || path.contains("/plugins/") || path.contains("/static/")) {
+                    return false
+                }
+                if (fragment.startsWith("user/login") ||
+                    fragment == "login" ||
+                    fragment.startsWith("login/") ||
+                    fragment.startsWith("login?")
+                ) {
+                    return true
+                }
+                if (path.contains("/user/login")) {
+                    return true
+                }
+                query.startsWith("user/login") ||
+                    query.contains("&user/login") ||
+                    query.startsWith("user/view/login") ||
+                    query.contains("&user/view/login") ||
+                    query.startsWith("user/index/login") ||
+                    query.contains("&user/index/login")
+            }.getOrDefault(false)
+        }
+
+        /**
+         * Heuristic check for raw HTML bodies returned instead of JSON/files when a KodBox session expires
+         * and redirects to the web login page.
+         */
+        fun looksLikeHtmlLoginPage(rawBody: String): Boolean {
+            val trimmed = rawBody.trim()
+            if (trimmed.isEmpty()) return false
+            val lower = trimmed.lowercase(Locale.ROOT)
+            val looksHtml = lower.startsWith("<!doctype html") || lower.startsWith("<html") || lower.contains("<form") || lower.contains("<title")
+            if (!looksHtml) return false
+            return lower.contains("user/login") ||
+                lower.contains("loginsubmit") ||
+                lower.contains("#user/login") ||
+                lower.contains("login-box") ||
+                trimmed.contains("请先登录") ||
+                trimmed.contains("登录失效")
         }
 
         /**
@@ -160,6 +271,7 @@ class KodBoxApiClient {
                 msg.contains("不允许") ||
                 msg.contains("不支持") ||
                 msg.contains("HTTP 400") ||
+                msg.contains("HTTP 403") ||
                 msg.contains("HTTP 404") ||
                 msg.contains("HTTP 413") ||
                 msg.contains("HTTP 415")
@@ -167,10 +279,10 @@ class KodBoxApiClient {
 
         /**
          * Builds the official KodCloud Android client User-Agent format observed in production server logs:
-         * `kodCloud-System=Android;AppVersion=6.6;Language=zh_CN`
+         * `kodCloud-System=Android;AppVersion=0.04;Language=zh_CN`
          */
         fun buildKodCloudAppUserAgent(): String {
-            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "6.6" }
+            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "0.04" }
             val locale = Locale.getDefault()
             val lang = if (locale.country.isNotBlank()) "${locale.language}_${locale.country}" else locale.language.ifBlank { "zh_CN" }
             return "kodCloud-System=Android;AppVersion=$appVersion;Language=$lang"
@@ -186,7 +298,7 @@ class KodBoxApiClient {
                 .replace("\"", "\\\"")
                 .replace("\r", "")
                 .replace("\n", "")
-            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "6.6" }
+            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "0.04" }
             val release = runCatching { Build.VERSION.RELEASE }.getOrNull().orEmpty().ifBlank { "14" }
             val sdkInt = runCatching { Build.VERSION.SDK_INT }.getOrNull()?.takeIf { it > 0 }?.toString() ?: "34"
             val brand = runCatching { Build.BRAND }.getOrNull().orEmpty().trim().ifBlank { "Android" }
@@ -256,8 +368,47 @@ class KodBoxApiClient {
                 manufacturer.isNotBlank() && !model.startsWith(manufacturer, ignoreCase = true) -> "$manufacturer $model"
                 else -> model
             }.replace(Regex("[\\r\\n();]+"), " ").trim().ifBlank { "Android Device" }
-            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "6.6" }
+            val appVersion = runCatching { BuildConfig.VERSION_NAME }.getOrNull().orEmpty().ifBlank { "0.04" }
             return "Mozilla/5.0 (Linux; Android $androidVersion; $deviceLabel) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36 KodNext/$appVersion"
+        }
+    }
+
+    private val _sessionExpiredEvents = MutableSharedFlow<SessionExpiredEvent>(extraBufferCapacity = 8)
+    val sessionExpiredEvents: SharedFlow<SessionExpiredEvent> = _sessionExpiredEvents.asSharedFlow()
+
+    internal fun notifySessionExpired(account: KodAccount, reason: String) {
+        val cleanReason = reason.trim().ifBlank { "登录凭证已失效，请重新登录" }
+        _sessionExpiredEvents.tryEmit(
+            SessionExpiredEvent(
+                accountId = account.id,
+                serverUrl = account.serverUrl,
+                siteName = account.siteName,
+                username = account.username,
+                reason = cleanReason
+            )
+        )
+    }
+
+    private fun checkAndThrowIfAuthError(
+        account: KodAccount,
+        httpCode: Int,
+        json: JSONObject?,
+        rawBody: String = ""
+    ) {
+        if (httpCode == 401) {
+            val reason = "登录凭证已失效，请重新登录 (HTTP 401)"
+            notifySessionExpired(account, reason)
+            error(reason)
+        }
+        if (json != null && isKodAuthErrorJson(json)) {
+            val detail = extractKodError(json, "登录凭证已失效，请重新登录")
+            notifySessionExpired(account, detail)
+            error(detail)
+        }
+        if (json == null && rawBody.isNotBlank() && looksLikeHtmlLoginPage(rawBody)) {
+            val reason = "登录状态已失效，服务器已跳转至网页登录页，请重新登录"
+            notifySessionExpired(account, reason)
+            error(reason)
         }
     }
 
@@ -332,21 +483,36 @@ class KodBoxApiClient {
         }
     }
 
+    private data class InitFetchResult(
+        val httpCode: Int,
+        val json: JSONObject?,
+        val serverError: String? = null
+    )
+
+    private data class TokenExchangeResult(
+        val accessToken: String = "",
+        val sessionEstablished: Boolean = false,
+        val account: KodAccount? = null,
+        val serverError: String? = null
+    )
+
     private fun fetchOptionsOrInitJson(
         normalizedUrl: String,
         explicitToken: String = "",
+        tokenParamName: String = "accessToken",
         requireAuthenticatedUser: Boolean = false
-    ): Pair<Int, JSONObject?> {
+    ): InitFetchResult {
         val platformEncoded = urlEncode(buildPlatformHeaderPayload())
         val routes = listOf("user/view/options", "user/index/init")
         // Official KodCloud Android client uses POST /?<route>&accessToken=<tok>&HTTP_X_PLATFORM_1=<b64>
         val candidates = buildList {
             for (route in routes) {
                 if (explicitToken.isNotBlank()) {
-                    add(Triple("$normalizedUrl/?$route&accessToken=${urlEncode(explicitToken)}&HTTP_X_PLATFORM_1=$platformEncoded", true, explicitToken))
-                    add(Triple("$normalizedUrl/index.php?$route&accessToken=${urlEncode(explicitToken)}&HTTP_X_PLATFORM_1=$platformEncoded", true, explicitToken))
-                    add(Triple("$normalizedUrl/?$route&accessToken=${urlEncode(explicitToken)}&HTTP_X_PLATFORM_1=$platformEncoded", false, explicitToken))
-                    add(Triple("$normalizedUrl/index.php?$route&accessToken=${urlEncode(explicitToken)}&HTTP_X_PLATFORM_1=$platformEncoded", false, explicitToken))
+                    val encodedTok = urlEncode(explicitToken)
+                    add(Triple("$normalizedUrl/?$route&$tokenParamName=$encodedTok&HTTP_X_PLATFORM_1=$platformEncoded", true, explicitToken))
+                    add(Triple("$normalizedUrl/?$route&$tokenParamName=$encodedTok&HTTP_X_PLATFORM_1=$platformEncoded", false, explicitToken))
+                    add(Triple("$normalizedUrl/index.php?$route&$tokenParamName=$encodedTok&HTTP_X_PLATFORM_1=$platformEncoded", true, explicitToken))
+                    add(Triple("$normalizedUrl/index.php?$route&$tokenParamName=$encodedTok&HTTP_X_PLATFORM_1=$platformEncoded", false, explicitToken))
                 } else {
                     add(Triple("$normalizedUrl/?$route&HTTP_X_PLATFORM_1=$platformEncoded", false, ""))
                     add(Triple("$normalizedUrl/index.php?$route&HTTP_X_PLATFORM_1=$platformEncoded", false, ""))
@@ -357,6 +523,7 @@ class KodBoxApiClient {
         var lastHttpCode = 0
         var fallbackJson: JSONObject? = null
         var fallbackCode = 0
+        var lastServerError: String? = null
         for ((endpoint, isPost, tokenParam) in candidates) {
             val reqBuilder = Request.Builder()
                 .url(endpoint)
@@ -365,25 +532,40 @@ class KodBoxApiClient {
             val request = if (isPost) {
                 val form = FormBody.Builder()
                 if (tokenParam.isNotBlank()) {
-                    form.add("accessToken", tokenParam)
+                    form.add(tokenParamName, tokenParam)
                 }
                 reqBuilder.post(form.build()).build()
             } else {
                 reqBuilder.get().build()
             }
+            var stopEarlyRejectedToken = false
             val result = runCatching {
                 okHttpClient.newCall(request).execute().use { response ->
                     lastHttpCode = response.code
                     val body = response.body?.string().orEmpty()
                     if (response.isSuccessful) {
                         val json = parseJsonObject(body)
-                        if (json != null && json.optJSONObject("data") != null) {
-                            if (fallbackJson == null) {
-                                fallbackJson = json
-                                fallbackCode = response.code
-                            }
-                            if (!requireAuthenticatedUser || hasAuthenticatedUser(json)) {
-                                return@use response.code to json
+                        if (json != null) {
+                            if (json.optJSONObject("data") != null) {
+                                if (fallbackJson == null) {
+                                    fallbackJson = json
+                                    fallbackCode = response.code
+                                }
+                                if (!requireAuthenticatedUser || hasAuthenticatedUser(json)) {
+                                    return@use InitFetchResult(response.code, json, null)
+                                }
+                            } else if (!isKodSuccess(json)) {
+                                val errText = extractKodError(json, "").trim().ifBlank {
+                                    if (isKodAuthErrorJson(json)) "登录凭证已失效 (code ${json.opt("code")})" else ""
+                                }
+                                if (errText.isNotBlank() && lastServerError == null) {
+                                    lastServerError = errText
+                                }
+                                // KodBox returns code=10001 (or code=false with error message) immediately when
+                                // accessToken is rejected by auth middleware; no need to spam 7 duplicate routes
+                                if (explicitToken.isNotBlank() && (isKodAuthErrorJson(json) || errText.isNotBlank())) {
+                                    stopEarlyRejectedToken = true
+                                }
                             }
                         }
                     }
@@ -391,8 +573,13 @@ class KodBoxApiClient {
                 }
             }.getOrNull()
             if (result != null) return result
+            if (stopEarlyRejectedToken) break
         }
-        return if (fallbackJson != null) fallbackCode to fallbackJson else lastHttpCode to null
+        return if (fallbackJson != null) {
+            InitFetchResult(fallbackCode, fallbackJson, lastServerError)
+        } else {
+            InitFetchResult(lastHttpCode, null, lastServerError)
+        }
     }
 
     suspend fun probeServer(rawUrl: String): Result<ServerProbeInfo> = withContext(Dispatchers.IO) {
@@ -400,7 +587,9 @@ class KodBoxApiClient {
             return@withContext Result.failure(it)
         }
         runCatching {
-            val (httpCode, json) = fetchOptionsOrInitJson(normalized, requireAuthenticatedUser = false)
+            val initResult = fetchOptionsOrInitJson(normalized, requireAuthenticatedUser = false)
+            val httpCode = initResult.httpCode
+            val json = initResult.json
             if (httpCode !in 200..299 && json == null) {
                 return@runCatching ServerProbeInfo(
                     normalizedUrl = normalized,
@@ -540,6 +729,130 @@ class KodBoxApiClient {
         }
     }
 
+    /**
+     * Official KodBox mobile QR login flow (scanned from Web Account Center `#?loginAppID=...`):
+     * 1. `POST /?plugin/client/loginApp&HTTP_X_PLATFORM_1=<b64>` with `loginAppID=<id>` -> returns `accessToken`
+     * 2. `POST /?user/view/options&accessToken=<accessToken>&HTTP_X_PLATFORM_1=<b64>` -> hydrates full user session
+     */
+    suspend fun loginWithAppId(
+        rawServerUrl: String,
+        loginAppId: String
+    ): Result<KodAccount> = withContext(Dispatchers.IO) {
+        val normalized = KodFormatters.normalizeServerUrl(rawServerUrl).getOrElse {
+            return@withContext Result.failure(it)
+        }
+        val cleanId = loginAppId.trim()
+        if (cleanId.isEmpty()) {
+            return@withContext Result.failure(IllegalArgumentException("二维码缺少有效的 loginAppID"))
+        }
+        runCatching {
+            val platformEncoded = urlEncode(buildPlatformHeaderPayload())
+            val exchangeAttempts = listOf(
+                // Official primary format: POST /?plugin/client/loginApp with loginAppID
+                "$normalized/?plugin/client/loginApp&HTTP_X_PLATFORM_1=$platformEncoded" to mapOf(
+                    "loginAppID" to cleanId,
+                    "API_ROUTE" to "plugin/client/loginApp"
+                ),
+                // Fallback if server client plugin reads token/id/code param name
+                "$normalized/?plugin/client/loginApp&HTTP_X_PLATFORM_1=$platformEncoded" to mapOf(
+                    "loginAppID" to cleanId,
+                    "token" to cleanId,
+                    "id" to cleanId,
+                    "code" to cleanId,
+                    "loginToken" to cleanId,
+                    "API_ROUTE" to "plugin/client/loginApp"
+                ),
+                // Fallback for servers without URL rewrite rules
+                "$normalized/index.php?plugin/client/loginApp&HTTP_X_PLATFORM_1=$platformEncoded" to mapOf(
+                    "loginAppID" to cleanId,
+                    "token" to cleanId,
+                    "id" to cleanId,
+                    "API_ROUTE" to "plugin/client/loginApp"
+                )
+            )
+
+            var exchangedAccessToken = ""
+            var sessionEstablished = false
+            var directAccount: KodAccount? = null
+            var lastServerError: String? = null
+
+            for ((endpoint, formMap) in exchangeAttempts) {
+                val formBuilder = FormBody.Builder()
+                formMap.forEach { (k, v) -> formBuilder.add(k, v) }
+                val req = Request.Builder()
+                    .url(endpoint)
+                    .header("Accept", "application/json")
+                    .header("X-Requested-With", "XMLHttpRequest")
+                    .post(formBuilder.build())
+                    .build()
+
+                val outcome = runCatching {
+                    okHttpClient.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@use null
+                        val body = resp.body?.string().orEmpty()
+                        val json = parseJsonObject(body) ?: return@use null
+                        val tok = extractTokenFromJson(json)
+                        if (hasAuthenticatedUser(json)) {
+                            val acc = runCatching {
+                                buildAccountFromInitJson(
+                                    normalizedUrl = normalized,
+                                    json = json,
+                                    fallbackUsername = "qr_user",
+                                    explicitToken = tok
+                                )
+                            }.getOrNull()
+                            if (acc != null) {
+                                return@use TokenExchangeResult(accessToken = tok, sessionEstablished = true, account = acc)
+                            }
+                        }
+                        if (tok.isNotBlank() && tok != cleanId) {
+                            return@use TokenExchangeResult(accessToken = tok, sessionEstablished = true)
+                        }
+                        if (isKodSuccess(json)) {
+                            val dataVal = json.opt("data")
+                            if (dataVal !is Boolean || dataVal) {
+                                return@use TokenExchangeResult(accessToken = tok.takeIf { it != cleanId }.orEmpty(), sessionEstablished = true)
+                            }
+                        } else {
+                            val err = extractKodError(json, "").trim()
+                            if (err.isNotBlank() && lastServerError == null) {
+                                lastServerError = err
+                            }
+                        }
+                        null
+                    }
+                }.getOrNull()
+
+                if (outcome != null) {
+                    directAccount = outcome.account
+                    exchangedAccessToken = outcome.accessToken
+                    sessionEstablished = outcome.sessionEstablished
+                    break
+                }
+            }
+
+            if (directAccount != null) {
+                return@runCatching directAccount
+            }
+            if (exchangedAccessToken.isNotBlank()) {
+                return@runCatching fetchInitAccount(
+                    normalizedUrl = normalized,
+                    fallbackUsername = "qr_user",
+                    explicitToken = exchangedAccessToken
+                )
+            }
+            if (sessionEstablished) {
+                return@runCatching fetchInitAccount(
+                    normalizedUrl = normalized,
+                    fallbackUsername = "qr_user",
+                    explicitToken = ""
+                )
+            }
+
+            error(lastServerError ?: "扫码凭证交换失败或二维码已过期，请刷新网页端二维码重试")
+        }
+    }
+
     suspend fun loginWithToken(
         rawServerUrl: String,
         accessToken: String
@@ -564,13 +877,52 @@ class KodBoxApiClient {
                 return@runCatching directAttempt.getOrThrow()
             }
 
-            // 2. If QR carried a short-lived loginToken / web QR token, exchange it for session + accessToken
-            val exchangedToken = exchangeLoginTokenForAccessToken(normalized, cleanToken)
-            fetchInitAccount(
-                normalizedUrl = normalized,
-                fallbackUsername = "qr_user",
-                explicitToken = exchangedToken.ifBlank { cleanToken }
-            )
+            // 2. Direct loginToken verification on user/view/options & user/index/init (some KodBox builds accept loginToken directly)
+            val loginTokenDirect = runCatching {
+                fetchInitAccount(
+                    normalizedUrl = normalized,
+                    fallbackUsername = "qr_user",
+                    explicitToken = cleanToken,
+                    tokenParamName = "loginToken"
+                )
+            }
+            if (loginTokenDirect.isSuccess) {
+                return@runCatching loginTokenDirect.getOrThrow()
+            }
+
+            // 3. Prime CSRF_TOKEN & KOD_SESSION_ID cookie before POSTing to loginSubmit / token-exchange routes
+            val host = normalized.toHttpUrlOrNull()?.host.orEmpty()
+            val primedCsrf = cookieJar.getCsrfToken(host).ifBlank {
+                probeServer(normalized).getOrNull()?.csrfToken.orEmpty()
+            }
+
+            // 4. Exchange short-lived loginToken / QR code token for session cookie or accessToken
+            val exchange = exchangeLoginTokenForAccessToken(normalized, cleanToken, primedCsrf)
+            if (exchange.account != null) {
+                return@runCatching exchange.account
+            }
+            if (exchange.accessToken.isNotBlank()) {
+                return@runCatching fetchInitAccount(
+                    normalizedUrl = normalized,
+                    fallbackUsername = "qr_user",
+                    explicitToken = exchange.accessToken
+                )
+            }
+            if (exchange.sessionEstablished) {
+                // CRITICAL: Use the newly established KOD_SESSION_ID cookie (explicitToken = "")
+                // so KodBox's accessToken middleware does NOT override the valid session with the old loginToken!
+                return@runCatching fetchInitAccount(
+                    normalizedUrl = normalized,
+                    fallbackUsername = "qr_user",
+                    explicitToken = ""
+                )
+            }
+
+            val bestError = exchange.serverError
+                ?: directAttempt.exceptionOrNull()?.message
+                ?: loginTokenDirect.exceptionOrNull()?.message
+                ?: "二维码凭证无效或已过期"
+            error(bestError)
         }
     }
 
@@ -588,22 +940,24 @@ class KodBoxApiClient {
         }
         runCatching {
             val platformEncoded = urlEncode(buildPlatformHeaderPayload())
-            val targetUrl = if (qrUrl.contains("HTTP_X_PLATFORM_1", ignoreCase = true)) {
-                qrUrl
-            } else {
-                val sep = if (qrUrl.contains("?")) "&" else "?"
-                "$qrUrl${sep}HTTP_X_PLATFORM_1=$platformEncoded"
-            }
+            val targetUrl = appendQueryParamBeforeFragment(qrUrl, "HTTP_X_PLATFORM_1", platformEncoded)
 
             var extractedToken = ""
             var serverHintError: String? = null
-            val methods = listOf(false, true) // Try GET first, then POST if still unauthenticated
+            // Try: (1) AJAX GET, (2) Browser-style GET (allows 302 redirects / session cookies), (3) AJAX POST
+            val attempts = listOf(
+                Triple(false, true, targetUrl),
+                Triple(false, false, qrUrl),
+                Triple(true, true, targetUrl)
+            )
 
-            for (usePost in methods) {
+            for ((usePost, withAjaxHeader, reqUrl) in attempts) {
                 val reqBuilder = Request.Builder()
-                    .url(targetUrl)
+                    .url(reqUrl)
                     .header("Accept", "application/json, text/html, */*")
-                    .header("X-Requested-With", "XMLHttpRequest")
+                if (withAjaxHeader) {
+                    reqBuilder.header("X-Requested-With", "XMLHttpRequest")
+                }
                 val req = if (usePost) {
                     reqBuilder.post(FormBody.Builder().build()).build()
                 } else {
@@ -631,7 +985,7 @@ class KodBoxApiClient {
                                 )
                             }
                             if (!isKodSuccess(json)) {
-                                val msg = extractKodError(json, "")
+                                val msg = extractKodError(json, "").trim()
                                 if (msg.isNotBlank() && serverHintError == null) serverHintError = msg
                             }
                         } else if (body.isNotBlank()) {
@@ -649,17 +1003,43 @@ class KodBoxApiClient {
                 return@runCatching loginWithToken(normalized, extractedToken).getOrThrow()
             }
 
-            // Fallback: session cookie may have been set by visiting the QR callback URL
-            runCatching {
+            // Fallback 1 (BEFORE candidate token probing): Session cookie may have ALREADY been set by visiting qrUrl
+            val cookieAttempt = runCatching {
                 fetchInitAccount(
                     normalizedUrl = normalized,
                     fallbackUsername = "qr_user",
                     explicitToken = ""
                 )
-            }.getOrElse {
-                error(serverHintError ?: "该二维码未返回有效登录凭证或已过期")
             }
+            if (cookieAttempt.isSuccess) {
+                return@runCatching cookieAttempt.getOrThrow()
+            }
+
+            // Fallback 2: If QR URL carried candidate exchange tokens/codes (e.g. code=, key=, sign=, safeToken=), try exchanging them
+            var lastCandidateError: String? = null
+            val candidateTokens = KodQrLoginParser.extractCandidateExchangeTokens(qrUrl)
+            for (candidate in candidateTokens) {
+                val attempt = loginWithToken(normalized, candidate)
+                if (attempt.isSuccess) {
+                    return@runCatching attempt.getOrThrow()
+                }
+                val errMsg = attempt.exceptionOrNull()?.message?.trim()
+                if (!errMsg.isNullOrBlank() && lastCandidateError == null) {
+                    lastCandidateError = errMsg
+                }
+            }
+
+            error(serverHintError ?: lastCandidateError ?: "该二维码未返回有效登录凭证或已过期")
         }
+    }
+
+    private fun appendQueryParamBeforeFragment(rawUrl: String, key: String, encodedValue: String): String {
+        if (rawUrl.contains("$key=", ignoreCase = true)) return rawUrl
+        val hashIdx = rawUrl.indexOf('#')
+        val beforeHash = if (hashIdx >= 0) rawUrl.substring(0, hashIdx) else rawUrl
+        val hashPart = if (hashIdx >= 0) rawUrl.substring(hashIdx) else ""
+        val sep = if (beforeHash.contains("?")) "&" else "?"
+        return "$beforeHash$sep$key=$encodedValue$hashPart"
     }
 
     /**
@@ -716,9 +1096,11 @@ class KodBoxApiClient {
         val patterns = listOf(
             Regex("""["']accessToken["']\s*[:=]\s*["']([A-Za-z0-9_\-+=/.]{16,})["']"""),
             Regex("""["']loginToken["']\s*[:=]\s*["']([A-Za-z0-9_\-+=/.]{16,})["']"""),
+            Regex("""["']safeToken["']\s*[:=]\s*["']([A-Za-z0-9_\-+=/.]{16,})["']"""),
             Regex("""["']kodToken["']\s*[:=]\s*["']([A-Za-z0-9_\-+=/.]{16,})["']"""),
             Regex("""accessToken=([A-Za-z0-9_\-+%.]{16,})"""),
-            Regex("""loginToken=([A-Za-z0-9_\-+%.]{16,})""")
+            Regex("""loginToken=([A-Za-z0-9_\-+%.]{16,})"""),
+            Regex("""safeToken=([A-Za-z0-9_\-+%.]{16,})""")
         )
         for (regex in patterns) {
             val match = regex.find(body)?.groupValues?.getOrNull(1)?.trim()
@@ -729,50 +1111,108 @@ class KodBoxApiClient {
         return ""
     }
 
-    private fun exchangeLoginTokenForAccessToken(normalizedUrl: String, rawToken: String): String {
+    private fun exchangeLoginTokenForAccessToken(
+        normalizedUrl: String,
+        rawToken: String,
+        primedCsrf: String = ""
+    ): TokenExchangeResult {
         val platformEncoded = urlEncode(buildPlatformHeaderPayload())
         val host = normalizedUrl.toHttpUrlOrNull()?.host.orEmpty()
-        val csrf = cookieJar.getCsrfToken(host)
+        val csrf = primedCsrf.ifBlank { cookieJar.getCsrfToken(host) }
         val encodedTok = urlEncode(rawToken)
 
         val exchangeAttempts = listOf(
-            // Standard loginSubmit with loginToken (POST)
+            // 0. Official KodBox client plugin QR exchange (`POST /?plugin/client/loginApp`)
+            Triple(
+                "$normalizedUrl/?plugin/client/loginApp&HTTP_X_PLATFORM_1=$platformEncoded",
+                true,
+                mapOf(
+                    "loginAppID" to rawToken,
+                    "API_ROUTE" to "plugin/client/loginApp"
+                )
+            ),
+            Triple(
+                "$normalizedUrl/?plugin/client/loginApp&HTTP_X_PLATFORM_1=$platformEncoded",
+                true,
+                mapOf(
+                    "loginAppID" to rawToken,
+                    "token" to rawToken,
+                    "id" to rawToken,
+                    "code" to rawToken,
+                    "API_ROUTE" to "plugin/client/loginApp"
+                )
+            ),
+            // 1. KodBox standard user/index/loginSubmit with loginToken (POST + CSRF)
             Triple(
                 "$normalizedUrl/?user/index/loginSubmit&HTTP_X_PLATFORM_1=$platformEncoded",
                 true,
                 mapOf(
                     "loginToken" to rawToken,
-                    "token" to rawToken,
+                    "isApp" to "1",
                     "rememberPassword" to "1",
                     "salt" to "0",
                     "API_ROUTE" to "user/index/loginSubmit"
                 )
             ),
-            // accessToken exchange endpoint (POST)
+            // 2. KodBox user/index/loginSubmit with loginToken via GET
             Triple(
-                "$normalizedUrl/?user/index/accessToken&HTTP_X_PLATFORM_1=$platformEncoded",
-                true,
-                mapOf("token" to rawToken, "accessToken" to rawToken)
-            ),
-            // loginToken direct route (POST & GET)
-            Triple(
-                "$normalizedUrl/?user/index/loginToken&token=$encodedTok&HTTP_X_PLATFORM_1=$platformEncoded",
-                true,
-                mapOf("token" to rawToken, "loginToken" to rawToken)
-            ),
-            Triple(
-                "$normalizedUrl/?user/index/loginToken&token=$encodedTok&HTTP_X_PLATFORM_1=$platformEncoded",
+                "$normalizedUrl/?user/index/loginSubmit&loginToken=$encodedTok&isApp=1&HTTP_X_PLATFORM_1=$platformEncoded",
                 false,
                 emptyMap()
             ),
-            // SSO token login route (GET)
+            // 3. KodBox user/index/loginSubmit with token/safeToken (POST)
             Triple(
-                "$normalizedUrl/?user/sso/login&token=$encodedTok&HTTP_X_PLATFORM_1=$platformEncoded",
+                "$normalizedUrl/?user/index/loginSubmit&HTTP_X_PLATFORM_1=$platformEncoded",
+                true,
+                mapOf(
+                    "token" to rawToken,
+                    "safeToken" to rawToken,
+                    "isApp" to "1",
+                    "rememberPassword" to "1",
+                    "API_ROUTE" to "user/index/loginSubmit"
+                )
+            ),
+            // 4. KodBox user/index/loginWithToken (POST & GET)
+            Triple(
+                "$normalizedUrl/?user/index/loginWithToken&HTTP_X_PLATFORM_1=$platformEncoded",
+                true,
+                mapOf("loginToken" to rawToken, "token" to rawToken, "isApp" to "1")
+            ),
+            Triple(
+                "$normalizedUrl/?user/index/loginWithToken&loginToken=$encodedTok&token=$encodedTok&isApp=1&HTTP_X_PLATFORM_1=$platformEncoded",
+                false,
+                emptyMap()
+            ),
+            // 5. KodBox official SSO API login endpoint (user/sso/apiLogin, GET & POST)
+            Triple(
+                "$normalizedUrl/?user/sso/apiLogin&token=$encodedTok&loginToken=$encodedTok&accessToken=$encodedTok&HTTP_X_PLATFORM_1=$platformEncoded",
+                false,
+                emptyMap()
+            ),
+            Triple(
+                "$normalizedUrl/?user/sso/apiLogin&HTTP_X_PLATFORM_1=$platformEncoded",
+                true,
+                mapOf("token" to rawToken, "loginToken" to rawToken, "accessToken" to rawToken)
+            ),
+            // 6. KodBox accessToken / appLogin endpoints
+            Triple(
+                "$normalizedUrl/?user/index/accessToken&HTTP_X_PLATFORM_1=$platformEncoded",
+                true,
+                mapOf("loginToken" to rawToken, "token" to rawToken, "safeToken" to rawToken, "code" to rawToken)
+            ),
+            Triple(
+                "$normalizedUrl/?user/index/appLogin&HTTP_X_PLATFORM_1=$platformEncoded",
+                true,
+                mapOf("token" to rawToken, "loginToken" to rawToken, "code" to rawToken, "isApp" to "1")
+            ),
+            Triple(
+                "$normalizedUrl/?user/view/call&loginToken=$encodedTok&token=$encodedTok&HTTP_X_PLATFORM_1=$platformEncoded",
                 false,
                 emptyMap()
             )
         )
 
+        var lastMeaningfulError: String? = null
         for ((endpoint, isPost, formMap) in exchangeAttempts) {
             val reqBuilder = Request.Builder()
                 .url(endpoint)
@@ -789,18 +1229,63 @@ class KodBoxApiClient {
                 reqBuilder.get().build()
             }
 
-            val tokenFound = runCatching {
+            val result = runCatching {
                 okHttpClient.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) return@use ""
+                    if (!resp.isSuccessful) return@use null
                     val body = resp.body?.string().orEmpty()
-                    val json = parseJsonObject(body) ?: return@use extractTokenFromHtmlOrText(body)
-                    extractTokenFromJson(json)
-                }
-            }.getOrDefault("")
+                    val json = parseJsonObject(body)
+                    if (json == null) {
+                        val htmlTok = extractTokenFromHtmlOrText(body)
+                        return@use if (htmlTok.isNotBlank() && htmlTok != rawToken) {
+                            TokenExchangeResult(accessToken = htmlTok, sessionEstablished = true)
+                        } else {
+                            null
+                        }
+                    }
 
-            if (tokenFound.isNotBlank()) return tokenFound
+                    val tok = extractTokenFromJson(json)
+                    if (hasAuthenticatedUser(json)) {
+                        val acc = runCatching {
+                            buildAccountFromInitJson(
+                                normalizedUrl = normalizedUrl,
+                                json = json,
+                                fallbackUsername = "qr_user",
+                                explicitToken = tok
+                            )
+                        }.getOrNull()
+                        if (acc != null) {
+                            return@use TokenExchangeResult(accessToken = tok, sessionEstablished = true, account = acc)
+                        }
+                    }
+
+                    if (tok.isNotBlank() && tok != rawToken) {
+                        return@use TokenExchangeResult(accessToken = tok, sessionEstablished = true)
+                    }
+
+                    if (isKodSuccess(json)) {
+                        // e.g. user/index/loginSubmit returned {"code":true,"data":"登录成功"} with Set-Cookie
+                        val dataVal = json.opt("data")
+                        val isRealLoginAck = dataVal !is Boolean || dataVal
+                        if (isRealLoginAck) {
+                            return@use TokenExchangeResult(accessToken = tok.takeIf { it != rawToken }.orEmpty(), sessionEstablished = true)
+                        }
+                    } else {
+                        val err = extractKodError(json, "").trim()
+                        if (err.isNotBlank() &&
+                            !err.contains("not exist", ignoreCase = true) &&
+                            !err.contains("不存在", ignoreCase = true) &&
+                            lastMeaningfulError == null
+                        ) {
+                            lastMeaningfulError = err
+                        }
+                    }
+                    null
+                }
+            }.getOrNull()
+
+            if (result != null) return result
         }
-        return ""
+        return TokenExchangeResult(serverError = lastMeaningfulError)
     }
 
     private fun extractTokenFromJson(json: JSONObject): String {
@@ -809,10 +1294,19 @@ class KodBoxApiClient {
             .ifBlank { dataObj?.optString("access_token").orEmpty() }
             .ifBlank { dataObj?.optString("loginToken").orEmpty() }
             .ifBlank { dataObj?.optString("login_token").orEmpty() }
+            .ifBlank { dataObj?.optString("safeToken").orEmpty() }
+            .ifBlank { dataObj?.optString("safe_token").orEmpty() }
+            .ifBlank { dataObj?.optString("kodToken").orEmpty() }
+            .ifBlank { dataObj?.optString("userToken").orEmpty() }
+            .ifBlank { dataObj?.optString("authToken").orEmpty() }
             .ifBlank { dataObj?.optString("token").orEmpty() }
             .ifBlank { dataObj?.optJSONObject("kod")?.optString("accessToken").orEmpty() }
+            .ifBlank { dataObj?.optJSONObject("user")?.optString("accessToken").orEmpty() }
+            .ifBlank { dataObj?.optJSONObject("options")?.optString("accessToken").orEmpty() }
             .ifBlank { json.optString("accessToken") }
             .ifBlank { json.optString("access_token") }
+            .ifBlank { json.optString("safeToken") }
+            .ifBlank { json.optString("token") }
         if (fromObj.isNotBlank() && !fromObj.equals("null", true)) return fromObj
 
         // Check nested redirect URL inside data.url or data.link
@@ -839,8 +1333,42 @@ class KodBoxApiClient {
     suspend fun refreshAccountInfo(account: KodAccount): Result<KodAccount> = withContext(Dispatchers.IO) {
         hydrateAccountSession(account)
         runCatching {
-            fetchInitAccount(
+            val initResult = fetchOptionsOrInitJson(
                 normalizedUrl = account.serverUrl,
+                explicitToken = account.accessToken,
+                tokenParamName = "accessToken",
+                requireAuthenticatedUser = true
+            )
+            if (initResult.httpCode == 401) {
+                val reason = "当前账号的登录凭证已失效，请重新登录 (HTTP 401)"
+                notifySessionExpired(account, reason)
+                error(reason)
+            }
+            val json = initResult.json
+            if (json == null) {
+                val errDetail = initResult.serverError?.takeIf { it.isNotBlank() }
+                if (errDetail != null && isAuthFailureMessage(errDetail)) {
+                    notifySessionExpired(account, errDetail)
+                    error(errDetail)
+                }
+                error(
+                    when {
+                        errDetail != null -> errDetail
+                        initResult.httpCode in 200..299 -> "无法解析网盘初始化响应"
+                        initResult.httpCode > 0 -> "获取用户信息失败 (HTTP ${initResult.httpCode})"
+                        else -> "网络连接失败，无法连接服务器"
+                    }
+                )
+            }
+            if (!hasAuthenticatedUser(json)) {
+                val detail = extractKodError(json, "").takeIf { it.isNotBlank() && isAuthFailureMessage(it) }
+                    ?: "当前账号的登录凭证已失效或已在其他端退出，请重新登录"
+                notifySessionExpired(account, detail)
+                error(detail)
+            }
+            buildAccountFromInitJson(
+                normalizedUrl = account.serverUrl,
+                json = json,
                 fallbackUsername = account.username,
                 explicitToken = account.accessToken,
                 existingId = account.id
@@ -852,21 +1380,31 @@ class KodBoxApiClient {
         normalizedUrl: String,
         fallbackUsername: String,
         explicitToken: String,
+        tokenParamName: String = "accessToken",
         existingId: String? = null
     ): KodAccount {
-        val (httpCode, json) = fetchOptionsOrInitJson(
+        val initResult = fetchOptionsOrInitJson(
             normalizedUrl = normalizedUrl,
             explicitToken = explicitToken,
+            tokenParamName = tokenParamName,
             requireAuthenticatedUser = true
         )
+        val json = initResult.json
         if (json == null) {
-            error(if (httpCode in 200..299) "无法解析网盘初始化响应" else "获取用户信息失败 (HTTP $httpCode)")
+            val errDetail = initResult.serverError?.takeIf { it.isNotBlank() }
+            error(
+                when {
+                    errDetail != null -> errDetail
+                    initResult.httpCode in 200..299 -> "无法解析网盘初始化响应"
+                    else -> "获取用户信息失败 (HTTP ${initResult.httpCode})"
+                }
+            )
         }
         return buildAccountFromInitJson(
             normalizedUrl = normalizedUrl,
             json = json,
             fallbackUsername = fallbackUsername,
-            explicitToken = explicitToken,
+            explicitToken = if (tokenParamName == "accessToken") explicitToken else "",
             existingId = existingId
         )
     }
@@ -908,8 +1446,12 @@ class KodBoxApiClient {
         }
 
         val kodInfo = data.optJSONObject("kod")
+        val optionsObj = data.optJSONObject("options")
+        val optionsKod = optionsObj?.optJSONObject("kod")
         val token = explicitToken.ifBlank {
             kodInfo?.optString("accessToken").orEmpty()
+                .ifBlank { optionsKod?.optString("accessToken").orEmpty() }
+                .ifBlank { optionsObj?.optString("accessToken").orEmpty() }
                 .ifBlank { data.optString("accessToken") }
                 .ifBlank { userInfo.optString("accessToken") }
         }
@@ -1375,8 +1917,15 @@ class KodBoxApiClient {
                 .get()
                 .build()
             okHttpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) error("获取插件列表失败 (HTTP ${resp.code})")
                 val js = resp.body?.string().orEmpty()
+                if (resp.code == 401) {
+                    checkAndThrowIfAuthError(account, resp.code, null, js)
+                }
+                if (!resp.isSuccessful) error("获取插件列表失败 (HTTP ${resp.code})")
+                val maybeJson = parseJsonObject(js)
+                if (maybeJson != null && isKodAuthErrorJson(maybeJson)) {
+                    checkAndThrowIfAuthError(account, resp.code, maybeJson, js)
+                }
                 ServerPluginsDiscovery(
                     viewerPlugins = KodPluginRegistry.parsePluginsFromJs(js),
                     workspaceApps = KodPluginRegistry.parseWorkspaceAppsFromJs(js, account.serverUrl)
@@ -1558,6 +2107,9 @@ class KodBoxApiClient {
             )
             val req = buildAuthedRequestBuilder(account, url).get().build()
             okHttpClient.newCall(req).execute().use { resp ->
+                if (resp.code == 401) {
+                    checkAndThrowIfAuthError(account, resp.code, null, "")
+                }
                 if (!resp.isSuccessful) error("读取文件失败 (HTTP ${resp.code})")
                 val body = resp.body ?: error("文件内容为空")
                 val maxBytes = 2 * 1024 * 1024 // 2 MB cap for smooth inline editing
@@ -1579,8 +2131,13 @@ class KodBoxApiClient {
                 if (contentType.contains("application/json") && item.normalizedExt != "json") {
                     val maybeErr = parseJsonObject(text)
                     if (maybeErr != null && maybeErr.has("code") && !isKodSuccess(maybeErr)) {
+                        checkAndThrowIfAuthError(account, resp.code, maybeErr, text)
                         error(extractKodError(maybeErr, "读取文件失败"))
                     }
+                }
+                val htmlExts = setOf("html", "htm", "xhtml", "mht", "mhtml")
+                if (contentType.contains("text/html") && item.normalizedExt !in htmlExts && looksLikeHtmlLoginPage(text)) {
+                    checkAndThrowIfAuthError(account, resp.code, null, text)
                 }
                 text
             }
@@ -1723,6 +2280,8 @@ class KodBoxApiClient {
 
         okHttpClient.newCall(req).execute().use { resp ->
             val rawBody = resp.body?.string().orEmpty()
+            val maybeJson = parseJsonObject(rawBody)
+            checkAndThrowIfAuthError(account, resp.code, maybeJson, rawBody)
             if (!resp.isSuccessful) error("上传失败 (HTTP ${resp.code})")
             requireKodSuccessJson(rawBody, "文件上传失败")
         }
@@ -1796,6 +2355,8 @@ class KodBoxApiClient {
 
                         okHttpClient.newCall(req).execute().use { resp ->
                             val rawBody = resp.body?.string().orEmpty()
+                            val maybeJson = parseJsonObject(rawBody)
+                            checkAndThrowIfAuthError(account, resp.code, maybeJson, rawBody)
                             if (!resp.isSuccessful) {
                                 error("分片上传失败 (${chunkIndex + 1}/$totalChunks, HTTP ${resp.code})")
                             }
@@ -1830,10 +2391,14 @@ class KodBoxApiClient {
     }
 
     private fun verifyBinaryDownloadResponse(
+        account: KodAccount,
         resp: okhttp3.Response,
         fileExt: String,
         actionLabel: String
     ) {
+        if (resp.code == 401) {
+            checkAndThrowIfAuthError(account, resp.code, null, "")
+        }
         if (!resp.isSuccessful) error("$actionLabel (HTTP ${resp.code})")
         val contentType = resp.header("Content-Type").orEmpty().lowercase(Locale.ROOT)
         val contentDisp = resp.header("Content-Disposition").orEmpty().lowercase(Locale.ROOT)
@@ -1843,6 +2408,7 @@ class KodBoxApiClient {
         if (!isAttachment && contentType.contains("application/json") && normalizedExt != "json") {
             val raw = resp.body?.string().orEmpty()
             val json = parseJsonObject(raw)
+            checkAndThrowIfAuthError(account, resp.code, json, raw)
             if (json != null && json.has("code") && !isKodSuccess(json)) {
                 error(extractKodError(json, actionLabel))
             }
@@ -1851,6 +2417,11 @@ class KodBoxApiClient {
 
         val htmlExts = setOf("html", "htm", "xhtml", "mht", "mhtml")
         if (!isAttachment && contentType.contains("text/html") && normalizedExt !in htmlExts) {
+            val rawHtml = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
+            if (looksLikeHtmlLoginPage(rawHtml) || isWebLoginRedirectUrl(resp.request.url.toString(), account.serverUrl)) {
+                notifySessionExpired(account, "登录凭证已失效，无法下载文件，请重新登录")
+                error("登录凭证已失效，无法下载文件，请重新登录")
+            }
             error("$actionLabel：服务器返回了网页而非文件内容，请检查登录状态或文件权限")
         }
     }
@@ -1890,7 +2461,7 @@ class KodBoxApiClient {
                     onProgress(destinationFile.length(), destinationFile.length())
                     return@runCatching destinationFile
                 }
-                verifyBinaryDownloadResponse(resp, item.normalizedExt, "下载失败")
+                verifyBinaryDownloadResponse(account, resp, item.normalizedExt, "下载失败")
                 val body = resp.body ?: error("响应体为空")
                 val isPartial = resp.code == 206 && canResume
                 val startOffset = if (isPartial) existingBytes else 0L
@@ -1944,7 +2515,7 @@ class KodBoxApiClient {
             )
             val req = buildAuthedRequestBuilder(account, url).get().build()
             okHttpClient.newCall(req).execute().use { resp ->
-                verifyBinaryDownloadResponse(resp, item.normalizedExt, "同步下载失败")
+                verifyBinaryDownloadResponse(account, resp, item.normalizedExt, "同步下载失败")
                 val body = resp.body ?: error("响应体为空")
                 val responseLen = body.contentLength()
                 val expectedTotal = when {
@@ -2054,11 +2625,12 @@ class KodBoxApiClient {
         val req = buildAuthedRequestBuilder(account, url).get().build()
         okHttpClient.newCall(req).execute().use { resp ->
             val raw = resp.body?.string().orEmpty()
+            val json = parseJsonObject(raw)
+            checkAndThrowIfAuthError(account, resp.code, json, raw)
             if (!resp.isSuccessful) error("服务器请求错误 (HTTP ${resp.code})")
+            if (json != null) return json
             val snippet = raw.trim().replace(Regex("\\s+"), " ").take(80)
-            return parseJsonObject(raw) ?: error(
-                if (snippet.isEmpty()) "服务器返回空响应 ($route)" else "服务器返回非 JSON 数据 ($snippet)"
-            )
+            error(if (snippet.isEmpty()) "服务器返回空响应 ($route)" else "服务器返回非 JSON 数据 ($snippet)")
         }
     }
 
@@ -2077,11 +2649,12 @@ class KodBoxApiClient {
             .build()
         okHttpClient.newCall(req).execute().use { resp ->
             val raw = resp.body?.string().orEmpty()
+            val json = parseJsonObject(raw)
+            checkAndThrowIfAuthError(account, resp.code, json, raw)
             if (!resp.isSuccessful) error("服务器操作失败 (HTTP ${resp.code})")
+            if (json != null) return json
             val snippet = raw.trim().replace(Regex("\\s+"), " ").take(80)
-            return parseJsonObject(raw) ?: error(
-                if (snippet.isEmpty()) "服务器返回空响应 ($route)" else "服务器返回非 JSON 数据 ($snippet)"
-            )
+            error(if (snippet.isEmpty()) "服务器返回空响应 ($route)" else "服务器返回非 JSON 数据 ($snippet)")
         }
     }
 

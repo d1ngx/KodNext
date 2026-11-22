@@ -87,7 +87,9 @@ fun FilePreviewScreen(
     onToggleFavorite: () -> Unit,
     onUpdateText: (String) -> Unit,
     onToggleEditMode: (Boolean) -> Unit,
-    onSaveText: () -> Unit
+    onSaveText: () -> Unit,
+    onSessionExpired: (String) -> Unit = {},
+    onReloginClick: () -> Unit = {}
 ) {
     BackHandler(onBack = onBack)
 
@@ -237,7 +239,9 @@ fun FilePreviewScreen(
                         selectedPlugin = selectedPlugin,
                         pluginUrl = pluginUrl,
                         onSelectPlugin = { selectedPluginName = it.name },
-                        onDownloadFallback = onDownload
+                        onDownloadFallback = onDownload,
+                        onSessionExpired = onSessionExpired,
+                        onReloginClick = onReloginClick
                     )
                 }
 

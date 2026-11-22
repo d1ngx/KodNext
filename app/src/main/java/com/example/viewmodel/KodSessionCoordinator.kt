@@ -2,6 +2,7 @@ package com.example.viewmodel
 
 import android.app.Application
 import coil.ImageLoader
+import com.example.data.KodBoxApiClient
 import com.example.data.KodQrLoginParser
 import com.example.data.KodQrPayload
 import com.example.data.repository.AuthRepository
@@ -90,6 +91,50 @@ internal class KodSessionCoordinator(
         val safeHint = KodQrLoginParser.describeSafely(rawContent)
 
         when (val payload = KodQrLoginParser.parse(rawContent)) {
+            is KodQrPayload.AppLoginId -> {
+                scope.launch {
+                    uiState.update {
+                        it.copy(
+                            showAddAccountLogin = true,
+                            loginForm = LoginFormState(
+                                step = LoginStep.SERVER_URL,
+                                serverUrl = payload.serverUrl,
+                                isLoggingIn = true,
+                                infoMessage = "已识别客户端扫码登录凭证，正在登录…",
+                                errorMessage = null
+                            )
+                        )
+                    }
+                    authRepository.loginWithAppId(payload.serverUrl, payload.loginAppId).fold(
+                        onSuccess = { account ->
+                            uiState.update {
+                                it.copy(
+                                    showAddAccountLogin = false,
+                                    loginForm = LoginFormState(),
+                                    sessionExpiredNotice = null,
+                                    activeTab = MainTab.HOME
+                                )
+                            }
+                            emitMessage("扫码登录成功：${account.siteName} (${account.displayName})")
+                        },
+                        onFailure = { err ->
+                            val reason = err.message ?: "二维码凭证已失效，请刷新网页端二维码或使用账号密码登录"
+                            uiState.update {
+                                it.copy(
+                                    loginForm = LoginFormState(
+                                        step = LoginStep.SERVER_URL,
+                                        serverUrl = payload.serverUrl,
+                                        isLoggingIn = false,
+                                        errorMessage = "$reason（格式：$safeHint）"
+                                    )
+                                )
+                            }
+                            emitError("扫码登录失败：$reason（$safeHint）")
+                        }
+                    )
+                }
+            }
+
             is KodQrPayload.TokenLogin -> {
                 scope.launch {
                     uiState.update {
@@ -110,23 +155,25 @@ internal class KodSessionCoordinator(
                                 it.copy(
                                     showAddAccountLogin = false,
                                     loginForm = LoginFormState(),
+                                    sessionExpiredNotice = null,
                                     activeTab = MainTab.HOME
                                 )
                             }
                             emitMessage("扫码登录成功：${account.siteName} (${account.displayName})")
                         },
                         onFailure = { err ->
+                            val reason = err.message ?: "二维码凭证已失效，请刷新网页端二维码或使用账号密码登录"
                             uiState.update {
                                 it.copy(
                                     loginForm = LoginFormState(
                                         step = LoginStep.SERVER_URL,
                                         serverUrl = payload.serverUrl,
                                         isLoggingIn = false,
-                                        errorMessage = err.message ?: "二维码凭证已失效，请刷新网页端二维码或使用账号密码登录"
+                                        errorMessage = "$reason（格式：$safeHint）"
                                     )
                                 )
                             }
-                            emitError(err.message ?: "扫码登录失败，请重新扫描或手动登录")
+                            emitError("扫码登录失败：$reason（$safeHint）")
                         }
                     )
                 }
@@ -167,6 +214,7 @@ internal class KodSessionCoordinator(
                                 it.copy(
                                     showAddAccountLogin = false,
                                     loginForm = LoginFormState(),
+                                    sessionExpiredNotice = null,
                                     activeTab = MainTab.HOME
                                 )
                             }
@@ -180,11 +228,11 @@ internal class KodSessionCoordinator(
                                         step = LoginStep.SERVER_URL,
                                         serverUrl = payload.serverUrl,
                                         isLoggingIn = false,
-                                        infoMessage = "已识别站点地址（$safeHint），$reason；已为您自动检测连接，请输入账号密码登录"
+                                        infoMessage = "已识别站点地址（格式：$safeHint），$reason；已为您自动检测连接，请输入账号密码登录"
                                     )
                                 )
                             }
-                            emitError("扫码未直接登录：$reason")
+                            emitError("扫码未直接登录：$reason（$safeHint）")
                             probeServerConnection(preserveInfoMessage = true)
                         }
                     )
@@ -212,6 +260,7 @@ internal class KodSessionCoordinator(
                                 it.copy(
                                     showAddAccountLogin = false,
                                     loginForm = LoginFormState(),
+                                    sessionExpiredNotice = null,
                                     activeTab = MainTab.HOME
                                 )
                             }
@@ -332,6 +381,7 @@ internal class KodSessionCoordinator(
                         it.copy(
                             showAddAccountLogin = false,
                             loginForm = LoginFormState(),
+                            sessionExpiredNotice = null,
                             activeTab = MainTab.HOME
                         )
                     }
@@ -378,6 +428,7 @@ internal class KodSessionCoordinator(
                 it.copy(
                     showAddAccountLogin = false,
                     showSettings = false,
+                    sessionExpiredNotice = null,
                     selectedPaths = emptySet(),
                     previewState = null
                 )
@@ -394,6 +445,7 @@ internal class KodSessionCoordinator(
                 it.copy(
                     showSettings = false,
                     showAccountCenter = false,
+                    sessionExpiredNotice = null,
                     selectedPaths = emptySet(),
                     files = emptyList(),
                     shares = emptyList(),
@@ -401,6 +453,89 @@ internal class KodSessionCoordinator(
                 )
             }
             emitMessage("已移除账号 ${account.displayName}")
+        }
+    }
+
+    fun onSessionExpired(account: KodAccount, reason: String) {
+        val current = uiState.value
+        if (current.activeAccount?.id != account.id) return
+        if (current.showAddAccountLogin || current.showQrScanner) return
+        val cleanReason = reason.trim().ifBlank { "当前账号登录凭证已失效，请重新登录" }
+        val existing = current.sessionExpiredNotice
+        if (existing != null && existing.accountId == account.id) {
+            if (existing.reason.isBlank() && cleanReason.isNotBlank()) {
+                uiState.update { it.copy(sessionExpiredNotice = existing.copy(reason = cleanReason)) }
+            }
+            return
+        }
+        uiState.update {
+            it.copy(
+                serverHealthMessage = "登录凭证已失效，请重新登录",
+                sessionExpiredNotice = SessionExpiredNotice(
+                    accountId = account.id,
+                    serverUrl = account.serverUrl,
+                    siteName = account.siteName,
+                    username = account.username,
+                    reason = cleanReason,
+                    dialogDismissed = false
+                )
+            )
+        }
+    }
+
+    fun dismissSessionExpiredDialog() {
+        uiState.update { state ->
+            val notice = state.sessionExpiredNotice ?: return@update state
+            state.copy(sessionExpiredNotice = notice.copy(dialogDismissed = true))
+        }
+    }
+
+    fun reloginExpiredAccount(openQrDirectly: Boolean = false) {
+        val state = uiState.value
+        val account = state.activeAccount
+        val notice = state.sessionExpiredNotice
+        val serverUrl = account?.serverUrl ?: notice?.serverUrl.orEmpty()
+        val username = account?.username ?: notice?.username.orEmpty()
+        val siteName = account?.siteName ?: notice?.siteName.orEmpty().ifBlank { "网盘" }
+
+        if (openQrDirectly) {
+            uiState.update {
+                it.copy(
+                    activeWorkspaceApp = null,
+                    previewState = null,
+                    showSettings = false,
+                    showAccountCenter = false,
+                    showSharedScreen = false,
+                    showSyncScreen = false,
+                    actionSheetItem = null,
+                    sessionExpiredNotice = it.sessionExpiredNotice?.copy(dialogDismissed = true),
+                    showQrScanner = true
+                )
+            }
+            return
+        }
+
+        uiState.update {
+            it.copy(
+                activeWorkspaceApp = null,
+                previewState = null,
+                showSettings = false,
+                showAccountCenter = false,
+                showSharedScreen = false,
+                showSyncScreen = false,
+                actionSheetItem = null,
+                sessionExpiredNotice = it.sessionExpiredNotice?.copy(dialogDismissed = true),
+                showAddAccountLogin = true,
+                loginForm = LoginFormState(
+                    step = LoginStep.SERVER_URL,
+                    serverUrl = serverUrl,
+                    username = username,
+                    infoMessage = "「$siteName」登录凭证已失效，请重新输入密码或扫码登录"
+                )
+            )
+        }
+        if (serverUrl.isNotBlank()) {
+            probeServerConnection(preserveInfoMessage = true)
         }
     }
 
@@ -412,6 +547,7 @@ internal class KodSessionCoordinator(
                     loadServerPlugins(refreshed)
                     uiState.update {
                         it.copy(
+                            sessionExpiredNotice = if (it.sessionExpiredNotice?.accountId == refreshed.id) null else it.sessionExpiredNotice,
                             serverHealthMessage = "连接正常 · 服务端 ${refreshed.serverVersion.ifBlank { "已就绪" }}"
                         )
                     }
@@ -419,6 +555,9 @@ internal class KodSessionCoordinator(
                 onFailure = { err ->
                     uiState.update {
                         it.copy(serverHealthMessage = "连接检查失败：${err.message}")
+                    }
+                    if (KodBoxApiClient.isAuthFailure(err)) {
+                        onSessionExpired(account, err.message ?: "当前账号的登录凭证已失效，请重新登录")
                     }
                 }
             )

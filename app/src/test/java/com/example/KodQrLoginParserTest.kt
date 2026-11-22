@@ -150,6 +150,79 @@ class KodQrLoginParserTest {
         val safe = KodQrLoginParser.describeSafely(raw)
         assertFalse(safe.contains("super_secret_token_value"))
         assertTrue(safe.contains("demo.box.kodcloud.com"))
+        assertTrue(safe.contains("accessToken(24)"))
+    }
+
+    @Test
+    fun parsesSafeTokenInUrlAndJson() {
+        val urlRaw = "https://demo.box.kodcloud.com/?user/view/options&safeToken=safe_tok_123456"
+        val urlResult = KodQrLoginParser.parse(urlRaw)
+        assertTrue(urlResult is KodQrPayload.TokenLogin)
+        assertEquals("https://demo.box.kodcloud.com", (urlResult as KodQrPayload.TokenLogin).serverUrl)
+        assertEquals("safe_tok_123456", urlResult.accessToken)
+
+        val jsonRaw = """{"url":"https://demo.box.kodcloud.com/","safeToken":"safe_json_tok_987"}"""
+        val jsonResult = KodQrLoginParser.parse(jsonRaw)
+        assertTrue(jsonResult is KodQrPayload.TokenLogin)
+        assertEquals("https://demo.box.kodcloud.com", (jsonResult as KodQrPayload.TokenLogin).serverUrl)
+        assertEquals("safe_json_tok_987", jsonResult.accessToken)
+    }
+
+    @Test
+    fun parsesExternalWrapperUrlWithCodeAsTokenLogin() {
+        val raw = "https://kodcloud.com/download/app/?url=https%3A%2F%2Fdrive.myorg.cn&code=qr_code_9876543210"
+        val result = KodQrLoginParser.parse(raw)
+        assertTrue(result is KodQrPayload.TokenLogin)
+        val tokenLogin = result as KodQrPayload.TokenLogin
+        assertEquals("https://drive.myorg.cn", tokenLogin.serverUrl)
+        assertEquals("qr_code_9876543210", tokenLogin.accessToken)
+    }
+
+    @Test
+    fun parsesExternalWrapperUrlWithDoubleEncodedInnerTokenUrl() {
+        val raw = "https://kodcloud.com/download/?url=https%253A%252F%252Fdrive.myorg.cn%252F%253FaccessToken%253Dtok_double_encoded"
+        val result = KodQrLoginParser.parse(raw)
+        assertTrue(result is KodQrPayload.TokenLogin)
+        val tokenLogin = result as KodQrPayload.TokenLogin
+        assertEquals("https://drive.myorg.cn", tokenLogin.serverUrl)
+        assertEquals("tok_double_encoded", tokenLogin.accessToken)
+    }
+
+    @Test
+    fun parsesArbitraryQueryParamContainingBase64Json() {
+        val json = """{"url":"https://cloud.fastcube.cn/","accessToken":"tok_param_b64_ok"}"""
+        val b64 = android.util.Base64.encodeToString(json.toByteArray(Charsets.UTF_8), android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP)
+        val raw = "https://kodcloud.com/download/?kod=$b64"
+        val result = KodQrLoginParser.parse(raw)
+        assertTrue(result is KodQrPayload.TokenLogin)
+        val tokenLogin = result as KodQrPayload.TokenLogin
+        assertEquals("https://cloud.fastcube.cn", tokenLogin.serverUrl)
+        assertEquals("tok_param_b64_ok", tokenLogin.accessToken)
+    }
+
+    @Test
+    fun parsesExternalWrapperUrlWithOnlyServerAsServerOnly() {
+        val raw = "https://kodcloud.com/download/?app=kodbox&url=https%3A%2F%2Fdrive.myorg.cn"
+        val result = KodQrLoginParser.parse(raw)
+        assertTrue(result is KodQrPayload.ServerOnly)
+        assertEquals("https://drive.myorg.cn", (result as KodQrPayload.ServerOnly).serverUrl)
+    }
+
+    @Test
+    fun extractsCandidateExchangeTokensFromAuthUrl() {
+        val raw = "https://demo.box.kodcloud.com/?user/index/qrcode&code=qr_session_8899"
+        val candidates = KodQrLoginParser.extractCandidateExchangeTokens(raw)
+        assertTrue(candidates.contains("qr_session_8899"))
+    }
+
+    @Test
+    fun parsesOfficialKodBoxLoginAppIdQrFormat() {
+        val raw = "https://demo.box.kodcloud.com/#?loginAppID=a7NZpmXDca3fT8lCJ4ceTBNjLNDRGpL8zRByWyCmrT5-i-3QhuwVs38f8vO9KEzAwv7NnXNZgsAVU2KmcvNE4J_uGQ"
+        val result = KodQrLoginParser.parse(raw)
+        assertTrue(result is KodQrPayload.AppLoginId)
+        val appLogin = result as KodQrPayload.AppLoginId
+        assertEquals("https://demo.box.kodcloud.com", appLogin.serverUrl)
+        assertEquals("a7NZpmXDca3fT8lCJ4ceTBNjLNDRGpL8zRByWyCmrT5-i-3QhuwVs38f8vO9KEzAwv7NnXNZgsAVU2KmcvNE4J_uGQ", appLogin.loginAppId)
     }
 
     @Test

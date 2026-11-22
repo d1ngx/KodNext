@@ -36,6 +36,9 @@ internal class KodSyncAndTransferCoordinator(
     private val onRefreshCurrentDirectory: () -> Unit
 ) {
     private var realtimeWatcherJob: Job? = null
+    @Volatile
+    var lastSyncBatchFinishedAtMs: Long = 0L
+        private set
 
     fun startRealtimeSyncWatcher() {
         realtimeWatcherJob?.cancel()
@@ -45,7 +48,10 @@ internal class KodSyncAndTransferCoordinator(
                 val state = uiState.value
                 val account = state.activeAccount ?: continue
                 val realtimeRules = state.syncRules.filter {
-                    it.enabled && it.frequency == SyncFrequency.REALTIME && it.id !in state.activeSyncingRuleIds
+                    it.enabled &&
+                        it.frequency == SyncFrequency.REALTIME &&
+                        it.id !in state.activeSyncingRuleIds &&
+                        !syncRepository.isRuleRunning(it.id)
                 }
                 realtimeRules.forEach { rule ->
                     if (!rule.wifiOnly || syncRepository.isWifiConnected()) {
@@ -145,32 +151,36 @@ internal class KodSyncAndTransferCoordinator(
     }
 
     private suspend fun runSyncRuleInternal(account: KodAccount, rule: SyncRule, silent: Boolean) {
-        if (rule.id in uiState.value.activeSyncingRuleIds) return
+        if (rule.id in uiState.value.activeSyncingRuleIds || syncRepository.isRuleRunning(rule.id)) return
         uiState.update { it.copy(activeSyncingRuleIds = it.activeSyncingRuleIds + rule.id) }
         syncRepository.saveRule(rule.copy(lastStatus = SyncRunStatus.SYNCING), rescheduleWorker = false)
 
         val outcome = syncRepository.executeSyncRule(account, rule)
         outcome.fold(
             onSuccess = { res ->
-                syncRepository.saveRule(
-                    rule.copy(
-                        lastSyncTime = System.currentTimeMillis(),
-                        lastStatus = SyncRunStatus.SUCCESS,
-                        lastSummary = res.summary
-                    ),
-                    rescheduleWorker = false
-                )
-                if (!silent) {
-                    emitMessage("${rule.name} 同步完成 (${res.summary})")
-                }
-                if (res.uploadedCount > 0) {
-                    onRefreshCurrentDirectory()
+                if (!res.alreadyRunning) {
+                    lastSyncBatchFinishedAtMs = System.currentTimeMillis()
+                    syncRepository.saveRule(
+                        rule.copy(
+                            lastSyncTime = lastSyncBatchFinishedAtMs,
+                            lastStatus = SyncRunStatus.SUCCESS,
+                            lastSummary = res.summary
+                        ),
+                        rescheduleWorker = false
+                    )
+                    if (!silent) {
+                        emitMessage("${rule.name} 同步完成 (${res.summary})")
+                    }
+                    if (res.uploadedCount > 0) {
+                        onRefreshCurrentDirectory()
+                    }
                 }
             },
             onFailure = { err ->
+                lastSyncBatchFinishedAtMs = System.currentTimeMillis()
                 syncRepository.saveRule(
                     rule.copy(
-                        lastSyncTime = System.currentTimeMillis(),
+                        lastSyncTime = lastSyncBatchFinishedAtMs,
                         lastStatus = SyncRunStatus.ERROR,
                         lastSummary = err.message ?: "同步异常"
                     ),

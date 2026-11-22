@@ -27,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
@@ -35,7 +36,8 @@ data class SyncOutcome(
     val downloadedCount: Int,
     val skippedCount: Int,
     val failedCount: Int = 0,
-    val summary: String
+    val summary: String,
+    val alreadyRunning: Boolean = false
 )
 
 /**
@@ -60,45 +62,61 @@ class KodSyncEngine(
     )
 
     suspend fun executeSyncRule(account: KodAccount, rule: SyncRule): Result<SyncOutcome> = withContext(Dispatchers.IO) {
-        runCatching {
-            val treeUri = Uri.parse(rule.localTreeUri)
-            val localDir = DocumentFile.fromTreeUri(context, treeUri)
-                ?: error("无法访问本地同步目录，请重新授权文件夹")
-            if (!localDir.exists() || !localDir.isDirectory) {
-                error("本地同步文件夹已不存在或权限已失效")
-            }
-            if ((rule.direction == SyncDirection.TWO_WAY || rule.direction == SyncDirection.UPLOAD_ONLY) &&
-                !KodBoxApiClient.isWritableKodDirectory(rule.remotePath)
-            ) {
-                error("网盘目标目录不支持上传，请重新选择个人空间或企业网盘的具体文件夹")
-            }
-
-            val counters = SyncCounters()
-            syncDirectoryRecursive(
-                account = account,
-                rule = rule,
-                localDir = localDir,
-                remoteDir = rule.remotePath,
-                relativePrefix = "",
-                depth = 0,
-                counters = counters
+        if (!tryAcquireRuleLock(rule.id)) {
+            return@withContext Result.success(
+                SyncOutcome(
+                    uploadedCount = 0,
+                    downloadedCount = 0,
+                    skippedCount = 0,
+                    failedCount = 0,
+                    summary = "同步任务正在执行中",
+                    alreadyRunning = true
+                )
             )
+        }
+        try {
+            runCatching {
+                val treeUri = Uri.parse(rule.localTreeUri)
+                val localDir = DocumentFile.fromTreeUri(context, treeUri)
+                    ?: error("无法访问本地同步目录，请重新授权文件夹")
+                if (!localDir.exists() || !localDir.isDirectory) {
+                    error("本地同步文件夹已不存在或权限已失效")
+                }
+                if ((rule.direction == SyncDirection.TWO_WAY || rule.direction == SyncDirection.UPLOAD_ONLY) &&
+                    !KodBoxApiClient.isWritableKodDirectory(rule.remotePath)
+                ) {
+                    error("网盘目标目录不支持上传，请重新选择个人空间或企业网盘的具体文件夹")
+                }
 
-            if (counters.failed > 0 && counters.uploaded == 0 && counters.downloaded == 0) {
-                throw counters.firstError ?: IllegalStateException("同步失败，共 ${counters.failed} 个文件传输失败")
-            }
+                val counters = SyncCounters()
+                syncDirectoryRecursive(
+                    account = account,
+                    rule = rule,
+                    localDir = localDir,
+                    remoteDir = rule.remotePath,
+                    relativePrefix = "",
+                    depth = 0,
+                    counters = counters
+                )
 
-            val summary = buildString {
-                append("上传 ${counters.uploaded} · 下载 ${counters.downloaded} · 一致跳过 ${counters.skipped}")
-                if (counters.failed > 0) append(" · 失败 ${counters.failed}")
+                if (counters.failed > 0 && counters.uploaded == 0 && counters.downloaded == 0) {
+                    throw counters.firstError ?: IllegalStateException("同步失败，共 ${counters.failed} 个文件传输失败")
+                }
+
+                val summary = buildString {
+                    append("上传 ${counters.uploaded} · 下载 ${counters.downloaded} · 一致跳过 ${counters.skipped}")
+                    if (counters.failed > 0) append(" · 失败 ${counters.failed}")
+                }
+                SyncOutcome(
+                    uploadedCount = counters.uploaded,
+                    downloadedCount = counters.downloaded,
+                    skippedCount = counters.skipped,
+                    failedCount = counters.failed,
+                    summary = summary
+                )
             }
-            SyncOutcome(
-                uploadedCount = counters.uploaded,
-                downloadedCount = counters.downloaded,
-                skippedCount = counters.skipped,
-                failedCount = counters.failed,
-                summary = summary
-            )
+        } finally {
+            releaseRuleLock(rule.id)
         }
     }
 
@@ -424,6 +442,22 @@ class KodSyncEngine(
         private const val PROGRESS_THROTTLE_MS = 200L
         private const val MAX_SYNC_DEPTH = 8
 
+        /**
+         * Process-wide lock ensuring a given [SyncRule.id] can never execute concurrently
+         * across foreground [KodSyncAndTransferCoordinator], realtime watcher, and WorkManager [KodSyncWorker].
+         */
+        private val runningRuleIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        internal fun tryAcquireRuleLock(ruleId: String): Boolean = runningRuleIds.add(ruleId)
+
+        internal fun releaseRuleLock(ruleId: String) {
+            runningRuleIds.remove(ruleId)
+        }
+
+        fun isRuleRunning(ruleId: String): Boolean = ruleId in runningRuleIds
+
+        fun hasAnyRunningSync(): Boolean = runningRuleIds.isNotEmpty()
+
         fun isUnmeteredWifiConnected(context: Context): Boolean {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
             val activeNetwork = cm.activeNetwork ?: return false
@@ -440,13 +474,17 @@ class KodSyncEngine(
                 workManager.cancelUniqueWork(workName)
                 return
             }
+            val intervalMinutes = rule.frequency.intervalMinutes.coerceAtLeast(15L)
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(if (rule.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
                 .build()
+            // Always delay the first periodic WorkManager tick by one interval so newly created
+            // or updated rules do not immediately race with foreground sync execution.
             val request = PeriodicWorkRequestBuilder<KodSyncWorker>(
-                rule.frequency.intervalMinutes.coerceAtLeast(15L),
+                intervalMinutes,
                 TimeUnit.MINUTES
             )
+                .setInitialDelay(intervalMinutes, TimeUnit.MINUTES)
                 .setConstraints(constraints)
                 .setInputData(workDataOf(KodSyncWorker.KEY_RULE_ID to rule.id))
                 .build()
@@ -486,6 +524,9 @@ class KodSyncWorker(
 
         return outcome.fold(
             onSuccess = { res ->
+                if (res.alreadyRunning) {
+                    return@fold Result.success()
+                }
                 syncRepo.saveRule(
                     rule.copy(
                         lastSyncTime = System.currentTimeMillis(),

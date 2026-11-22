@@ -56,6 +56,15 @@ class AuthRepository(
         return result
     }
 
+    suspend fun loginWithAppId(serverUrl: String, loginAppId: String): Result<KodAccount> {
+        val result = apiClient.loginWithAppId(serverUrl, loginAppId)
+        result.onSuccess { account ->
+            accountStore.saveOrUpdateAccount(account, makeActive = true)
+            apiClient.hydrateAccountSession(account)
+        }
+        return result
+    }
+
     suspend fun loginWithToken(serverUrl: String, accessToken: String): Result<KodAccount> {
         val result = apiClient.loginWithToken(serverUrl, accessToken)
         result.onSuccess { account ->

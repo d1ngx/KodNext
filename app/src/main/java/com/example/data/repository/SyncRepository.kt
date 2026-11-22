@@ -57,4 +57,8 @@ class SyncRepository(
         syncEngine.executeSyncRule(account, rule)
 
     fun isWifiConnected(): Boolean = KodSyncEngine.isUnmeteredWifiConnected(context)
+
+    fun isRuleRunning(ruleId: String): Boolean = KodSyncEngine.isRuleRunning(ruleId)
+
+    fun hasAnyRunningSync(): Boolean = KodSyncEngine.hasAnyRunningSync()
 }

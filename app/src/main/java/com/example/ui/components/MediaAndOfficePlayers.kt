@@ -77,10 +77,13 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
@@ -109,8 +112,23 @@ fun KodVideoPlayerView(
 
     val exoPlayer = remember(streamUrl, mediaOkHttpClient) {
         val dataSourceFactory = OkHttpDataSource.Factory(mediaOkHttpClient)
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                15_000, // minBufferMs for smooth WAN/NAS streaming
+                60_000, // maxBufferMs
+                1_500,  // bufferForPlaybackMs
+                3_000   // bufferForPlaybackAfterRebufferMs
+            )
+            .build()
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setLoadControl(loadControl)
+            .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
+            .setHandleAudioBecomingNoisy(true)
             .build().apply {
                 setMediaItem(MediaItem.fromUri(Uri.parse(streamUrl)))
                 playWhenReady = true
@@ -251,8 +269,24 @@ fun KodAudioPlayerView(
 
     val exoPlayer = remember(streamUrl, mediaOkHttpClient) {
         val dataSourceFactory = OkHttpDataSource.Factory(mediaOkHttpClient)
+        // Generous buffer & audio focus management to prevent FLAC/lossless audio stuttering on NAS/WAN
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                20_000,
+                90_000,
+                1_200,
+                2_500
+            )
+            .build()
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setLoadControl(loadControl)
+            .setAudioAttributes(audioAttributes, /* handleAudioFocus= */ true)
+            .setHandleAudioBecomingNoisy(true)
             .build().apply {
                 setMediaItem(MediaItem.fromUri(Uri.parse(streamUrl)))
                 playWhenReady = true

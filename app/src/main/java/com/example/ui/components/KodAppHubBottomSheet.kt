@@ -19,12 +19,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.DashboardCustomize
+import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.HelpCenter
-import androidx.compose.material.icons.filled.Storage
-import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.ViewKanban
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -35,8 +36,13 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -53,11 +59,12 @@ fun resolveWorkspaceAppVisual(appId: String): Pair<ImageVector, Color> {
         "project" -> Icons.Filled.ViewKanban to Color(0xFF0074C8)
         "kodim" -> Icons.Filled.Forum to Color(0xFF0D9488)
         "aidoc" -> Icons.Filled.AutoAwesome to Color(0xFF7C3AED)
-        "drawio", "minder", "excalidraw", "oemle5ledraw" -> Icons.Filled.AccountTree to Color(0xFF0284C7)
-        "photopea", "svgeditor", "tuiimage", "polarr" -> Icons.Filled.Brush to Color(0xFFDB2777)
+        "drawio", "oemle5ledraw" -> Icons.Filled.AccountTree to Color(0xFFF59E0B)
+        "minder" -> Icons.Filled.Hub to Color(0xFF0EA5E9)
+        "excalidraw" -> Icons.Filled.Draw to Color(0xFF8B5CF6)
+        "svgeditor" -> Icons.Filled.AutoFixHigh to Color(0xFFEC4899)
+        "photopea", "tuiimage", "polarr" -> Icons.Filled.Brush to Color(0xFFDB2777)
         "helpcenter" -> Icons.Filled.HelpCenter to Color(0xFF2563EB)
-        "webconsole" -> Icons.Filled.Terminal to Color(0xFF334155)
-        "adminer" -> Icons.Filled.Storage to Color(0xFFD97706)
         else -> Icons.Filled.DashboardCustomize to Color(0xFF0074C8)
     }
 }
@@ -70,6 +77,7 @@ fun KodAppHubBottomSheet(
     onLaunchApp: (KodWorkspaceApp) -> Unit,
     onDismiss: () -> Unit
 ) {
+    TrackModalOverlay()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -134,6 +142,10 @@ fun KodAppHubBottomSheet(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
+                                    var remoteIconLoaded by remember(app.iconUrl) { mutableStateOf(false) }
+                                    val canTryRemoteIcon = app.iconUrl.isNotBlank() &&
+                                        !app.iconUrl.substringBefore('?').endsWith(".svg", ignoreCase = true)
+
                                     Box(
                                         modifier = Modifier
                                             .size(40.dp)
@@ -141,19 +153,24 @@ fun KodAppHubBottomSheet(
                                             .background(tint.copy(alpha = 0.14f)),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        if (app.iconUrl.isNotBlank()) {
-                                            AsyncImage(
-                                                model = app.iconUrl,
-                                                imageLoader = imageLoader,
-                                                contentDescription = app.title,
-                                                modifier = Modifier.size(26.dp)
-                                            )
-                                        } else {
+                                        if (!remoteIconLoaded) {
                                             Icon(
                                                 imageVector = fallbackIcon,
                                                 contentDescription = app.title,
                                                 tint = tint,
                                                 modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                        if (canTryRemoteIcon) {
+                                            AsyncImage(
+                                                model = app.iconUrl,
+                                                imageLoader = imageLoader,
+                                                contentDescription = app.title,
+                                                onSuccess = { remoteIconLoaded = true },
+                                                onError = { remoteIconLoaded = false },
+                                                modifier = Modifier
+                                                    .size(26.dp)
+                                                    .alpha(if (remoteIconLoaded) 1f else 0f)
                                             )
                                         }
                                     }

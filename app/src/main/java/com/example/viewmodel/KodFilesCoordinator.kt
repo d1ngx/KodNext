@@ -744,7 +744,7 @@ internal class KodFilesCoordinator(
         val account = uiState.value.activeAccount ?: return
         val state = uiState.value.folderPickerState ?: return
         val targetPath = if (isEnterprise) account.groupRootPath else account.personalRootPath
-        val label = if (isEnterprise) "企业网盘" else "个人空间"
+        val label = if (isEnterprise) KodSpace.ENTERPRISE.label else KodSpace.PERSONAL.label
         uiState.update {
             it.copy(
                 folderPickerState = state.copy(

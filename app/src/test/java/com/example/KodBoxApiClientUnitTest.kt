@@ -116,7 +116,7 @@ class KodBoxApiClientUnitTest {
         """.trimIndent()
 
         val apps = KodPluginRegistry.parseWorkspaceAppsFromJs(sampleBundle, "https://cloud.example.com")
-        assertEquals(4, apps.size)
+        assertEquals(3, apps.size)
 
         val project = apps.first()
         assertEquals("project", project.id)
@@ -128,9 +128,7 @@ class KodBoxApiClientUnitTest {
         assertNotNull(kodIm)
         assertEquals("https://cloud.example.com/?plugin/kodIM/", kodIm!!.launchUrl)
 
-        val adminer = apps.find { it.id == "adminer" }
-        assertNotNull(adminer)
-        assertTrue(adminer!!.isAdminOnly)
+        assertNull(apps.find { it.id == "adminer" })
         assertNull(apps.find { it.id == "epubReader" })
     }
 

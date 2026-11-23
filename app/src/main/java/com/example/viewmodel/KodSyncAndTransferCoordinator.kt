@@ -1,12 +1,14 @@
 package com.example.viewmodel
 
+import android.app.Application
 import android.net.Uri
 import com.example.data.KodBoxApiClient
-import com.example.data.KodFormatters
+import com.example.data.LocalFileOpener
 import com.example.data.repository.SyncRepository
 import com.example.data.repository.TransferRepository
 import com.example.model.KodAccount
 import com.example.model.KodFileItem
+import com.example.model.SyncConflictPolicy
 import com.example.model.SyncDirection
 import com.example.model.SyncFrequency
 import com.example.model.SyncRule
@@ -26,6 +28,7 @@ import java.util.UUID
  * even in foreground realtime mode) and WorkManager-backed persistent Uploads/Downloads.
  */
 internal class KodSyncAndTransferCoordinator(
+    private val application: Application,
     private val scope: CoroutineScope,
     private val uiState: MutableStateFlow<KodUiState>,
     private val syncRepository: SyncRepository,
@@ -33,6 +36,7 @@ internal class KodSyncAndTransferCoordinator(
     private val emitMessage: (String) -> Unit,
     private val emitError: (String) -> Unit,
     private val emitOpenLocalFile: (File, String) -> Unit,
+    private val emitShareLocalFile: (File, String) -> Unit,
     private val onRefreshCurrentDirectory: () -> Unit
 ) {
     private var realtimeWatcherJob: Job? = null
@@ -70,7 +74,9 @@ internal class KodSyncAndTransferCoordinator(
         remoteFolderLabel: String,
         direction: SyncDirection,
         frequency: SyncFrequency,
-        wifiOnly: Boolean
+        wifiOnly: Boolean,
+        conflictPolicy: SyncConflictPolicy = SyncConflictPolicy.KEEP_BOTH_CONFLICT_COPY,
+        ignoreHiddenFiles: Boolean = true
     ) {
         val account = uiState.value.activeAccount ?: return
         val rule = SyncRule(
@@ -84,7 +90,9 @@ internal class KodSyncAndTransferCoordinator(
             direction = direction,
             frequency = frequency,
             wifiOnly = wifiOnly,
-            enabled = true
+            enabled = true,
+            conflictPolicy = conflictPolicy,
+            ignoreHiddenFiles = ignoreHiddenFiles
         )
         scope.launch {
             syncRepository.saveRule(rule, rescheduleWorker = true)
@@ -119,6 +127,14 @@ internal class KodSyncAndTransferCoordinator(
         scope.launch {
             syncRepository.saveRule(updated, rescheduleWorker = false)
             emitMessage("同步模式已更改为：${direction.label}")
+        }
+    }
+
+    fun updateSyncRuleConflictPolicy(rule: SyncRule, policy: SyncConflictPolicy) {
+        val updated = rule.copy(conflictPolicy = policy)
+        scope.launch {
+            syncRepository.saveRule(updated, rescheduleWorker = false)
+            emitMessage("冲突策略已更改为：${policy.label}")
         }
     }
 
@@ -257,12 +273,30 @@ internal class KodSyncAndTransferCoordinator(
     }
 
     fun openDownloadedTransfer(task: TransferTask) {
-        if (task.localPath.isBlank()) return
-        val file = File(task.localPath)
-        if (!file.exists()) {
-            emitError("本地文件不存在，请重新下载")
+        val file = LocalFileOpener.resolveExistingDownloadFile(
+            context = application,
+            recordedLocalPath = task.localPath,
+            fileName = task.fileName
+        )
+        if (file == null) {
+            emitError("本地文件不存在或已被清理，请重新下载")
             return
         }
-        emitOpenLocalFile(file, KodFormatters.mimeTypeForExtension(file.extension))
+        val mime = LocalFileOpener.resolveMimeType(file, task.mimeType)
+        emitOpenLocalFile(file, mime)
+    }
+
+    fun shareDownloadedTransfer(task: TransferTask) {
+        val file = LocalFileOpener.resolveExistingDownloadFile(
+            context = application,
+            recordedLocalPath = task.localPath,
+            fileName = task.fileName
+        )
+        if (file == null) {
+            emitError("本地文件不存在或已被清理，请重新下载")
+            return
+        }
+        val mime = LocalFileOpener.resolveMimeType(file, task.mimeType)
+        emitShareLocalFile(file, mime)
     }
 }

@@ -16,8 +16,19 @@ android {
     applicationId = "com.aistudio.kodnext.vkmrzp"
     minSdk = 24
     targetSdk = 36
-    versionCode = 16
-    versionName = "0.04"
+    versionCode = 27
+    versionName = "0.14"
+
+    // Fixed update source URL configured exclusively at build/packaging time.
+    // Set via Gradle property `-PAPP_UPDATE_URL=https://...`, env var `APP_UPDATE_URL`,
+    // or by editing the fallback string below before packaging.
+    val fixedUpdateUrl = (project.findProperty("APP_UPDATE_URL") as? String)
+      ?.trim()
+      ?.takeIf { it.isNotEmpty() }
+      ?: System.getenv("APP_UPDATE_URL")?.trim()?.takeIf { it.isNotEmpty() }
+      ?: ""
+    val escapedUpdateUrl = fixedUpdateUrl.replace("\\", "\\\\").replace("\"", "\\\"")
+    buildConfigField("String", "APP_UPDATE_URL", "\"$escapedUpdateUrl\"")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

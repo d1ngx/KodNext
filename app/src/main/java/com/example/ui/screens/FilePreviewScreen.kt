@@ -20,6 +20,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Extension
@@ -68,6 +70,7 @@ import com.example.model.KodPluginApp
 import com.example.ui.components.KodAudioPlayerView
 import com.example.ui.components.KodPluginWebViewPreview
 import com.example.ui.components.KodVideoPlayerView
+import com.example.ui.components.MarkdownDocumentContent
 import com.example.ui.components.resolveFileVisual
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.viewmodel.PreviewState
@@ -107,6 +110,8 @@ fun FilePreviewScreen(
     // For images (e.g., SVG) or editable text (e.g., CSV), default to fast native viewer
     // but allow 1-tap toggle to KodBox plugin (e.g., SVG Editor / OnlyOffice / Photopea).
     var preferPluginMode by remember(item.path) { mutableStateOf(false) }
+    val isMarkdownFile = item.normalizedExt == "md" || item.normalizedExt == "markdown"
+    var renderMarkdown by remember(item.path) { mutableStateOf(isMarkdownFile) }
 
     val canOfferOptionalPlugin = (item.isImage || item.isEditableText) && matchedPlugins.isNotEmpty()
     val usePluginViewer = when {
@@ -170,6 +175,17 @@ fun FilePreviewScreen(
                             )
                         }
                     }
+                    if (isMarkdownFile && !usePluginViewer && !preview.isEditingText && !preview.isLoadingText && preview.errorMessage == null) {
+                        IconButton(
+                            onClick = { renderMarkdown = !renderMarkdown },
+                            modifier = Modifier.testTag("preview_toggle_markdown_render")
+                        ) {
+                            Icon(
+                                imageVector = if (renderMarkdown) Icons.Filled.Code else Icons.Filled.Article,
+                                contentDescription = if (renderMarkdown) "查看源码" else "Markdown 渲染视图"
+                            )
+                        }
+                    }
                     if (item.isEditableText && !usePluginViewer && !preview.isLoadingText && preview.errorMessage == null) {
                         if (preview.isEditingText) {
                             IconButton(
@@ -200,7 +216,7 @@ fun FilePreviewScreen(
                         )
                     }
                     IconButton(onClick = onShare) {
-                        Icon(Icons.Filled.Share, contentDescription = "外链分享")
+                        Icon(Icons.Filled.Share, contentDescription = "共享与协作")
                     }
                     IconButton(onClick = onDownload) {
                         Icon(Icons.Filled.Download, contentDescription = "下载到本地")
@@ -332,14 +348,24 @@ fun FilePreviewScreen(
                                     .fillMaxSize()
                                     .padding(14.dp)
                             ) {
-                                Text(
-                                    text = preview.textContent.ifEmpty { "（空文件）" },
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = JetBrainsMonoFamily),
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .verticalScroll(rememberScrollState())
-                                        .padding(16.dp)
-                                )
+                                if (isMarkdownFile && renderMarkdown) {
+                                    MarkdownDocumentContent(
+                                        markdownContent = preview.textContent,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .verticalScroll(rememberScrollState())
+                                            .padding(16.dp)
+                                    )
+                                } else {
+                                    Text(
+                                        text = preview.textContent.ifEmpty { "（空文件）" },
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = JetBrainsMonoFamily),
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .verticalScroll(rememberScrollState())
+                                            .padding(16.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -389,7 +415,7 @@ fun FilePreviewScreen(
                             OutlinedButton(onClick = onShare) {
                                 Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("外链分享")
+                                Text("共享/协作")
                             }
                         }
                     }

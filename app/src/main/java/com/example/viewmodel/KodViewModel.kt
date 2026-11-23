@@ -10,8 +10,10 @@ import com.example.data.KodBoxApiClient
 import com.example.data.repository.KodAppContainer
 import com.example.model.AppPreferences
 import com.example.model.KodAccount
+import com.example.model.KodCollabAssignment
 import com.example.model.KodFileItem
 import com.example.model.KodFileTypeCategory
+import com.example.model.KodOAuthProvider
 import com.example.model.KodShareItem
 import com.example.model.KodSpace
 import com.example.model.KodTag
@@ -19,9 +21,12 @@ import com.example.model.KodWorkspaceApp
 import com.example.model.MainTab
 import com.example.model.SearchFilterState
 import com.example.model.ShareAccessMode
+import com.example.model.ShareCancelMode
+import com.example.model.ShareDialogTab
 import com.example.model.ShareSubTab
 import com.example.model.SortField
 import com.example.model.SortOrder
+import com.example.model.SyncConflictPolicy
 import com.example.model.SyncDirection
 import com.example.model.SyncFrequency
 import com.example.model.SyncRule
@@ -60,8 +65,10 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
 
     private var transfersHydrated: Boolean = false
     private var previousCompletedUploadIds: Set<String> = emptySet()
+    private var previousCompletedDownloadIds: Set<String> = emptySet()
     private var previousFailedTransferIds: Set<String> = emptySet()
     private var lastResumeSessionCheckAtMs: Long = 0L
+    private var autoUpdateCheckedOnce: Boolean = false
 
     private val filesCoordinator = KodFilesCoordinator(
         scope = viewModelScope,
@@ -78,8 +85,10 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
         uiState = _uiState,
         authRepository = container.authRepository,
         fileRepository = container.fileRepository,
+        updateChecker = container.updateChecker,
         emitMessage = ::emitMessage,
         emitError = ::emitError,
+        emitOpenExternalUrl = { url -> _events.tryEmit(KodUiEvent.OpenExternalUrl(url)) },
         onRefreshCurrentDirectory = { filesCoordinator.refreshCurrentDirectory() }
     )
 
@@ -95,6 +104,7 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     private val syncAndTransferCoordinator = KodSyncAndTransferCoordinator(
+        application = application,
         scope = viewModelScope,
         uiState = _uiState,
         syncRepository = container.syncRepository,
@@ -102,6 +112,7 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
         emitMessage = ::emitMessage,
         emitError = ::emitError,
         emitOpenLocalFile = { file, mime -> _events.tryEmit(KodUiEvent.OpenLocalFile(file, mime)) },
+        emitShareLocalFile = { file, mime -> _events.tryEmit(KodUiEvent.ShareLocalFile(file, mime)) },
         onRefreshCurrentDirectory = { filesCoordinator.refreshCurrentDirectory() }
     )
 
@@ -156,7 +167,12 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
                     filesCoordinator.loadHomeOverview(forceAccount = resolvedActive)
                     filesCoordinator.loadTags(resolvedActive)
                     sessionCoordinator.loadServerPlugins(resolvedActive)
+                    shareAndMediaCoordinator.loadShares()
                     sessionCoordinator.refreshAccountQuota(resolvedActive)
+                }
+                if (!autoUpdateCheckedOnce && prefs.autoCheckUpdates && com.example.data.KodAppUpdateChecker.hasFixedUpdateUrl()) {
+                    autoUpdateCheckedOnce = true
+                    sessionCoordinator.checkForUpdates(manual = false)
                 }
             }
         }
@@ -177,15 +193,23 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
                 } else emptyList()
                 scopedRules to scopedTransfers
             }.collect { (scopedRules, scopedTransfers) ->
-                // Auto-refresh directory & notify user when background uploads complete or transfers fail
+                // Auto-refresh directory & notify user when background uploads/downloads complete or fail
                 val completedUploads = scopedTransfers
                     .filter { it.type == TransferType.UPLOAD && it.status == TransferStatus.COMPLETED }
                 val completedUploadIds = completedUploads.map { it.id }.toSet()
+                val completedDownloads = scopedTransfers
+                    .filter { it.type == TransferType.DOWNLOAD && it.status == TransferStatus.COMPLETED }
+                val completedDownloadIds = completedDownloads.map { it.id }.toSet()
                 val failedTransfers = scopedTransfers.filter { it.status == TransferStatus.FAILED }
                 val failedTransferIds = failedTransfers.map { it.id }.toSet()
 
                 val newlyCompletedUploads = if (transfersHydrated) {
                     completedUploads.filter { it.id !in previousCompletedUploadIds }
+                } else {
+                    emptyList()
+                }
+                val newlyCompletedDownloads = if (transfersHydrated) {
+                    completedDownloads.filter { it.id !in previousCompletedDownloadIds }
                 } else {
                     emptyList()
                 }
@@ -197,6 +221,7 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
 
                 transfersHydrated = true
                 previousCompletedUploadIds = completedUploadIds
+                previousCompletedDownloadIds = completedDownloadIds
                 previousFailedTransferIds = failedTransferIds
 
                 _uiState.update { state ->
@@ -220,6 +245,10 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     emitMessage(msg)
                 }
+                if (newlyCompletedDownloads.isNotEmpty() && !isBatchSyncRunning) {
+                    val first = newlyCompletedDownloads.first()
+                    _events.tryEmit(KodUiEvent.DownloadCompleted(first))
+                }
                 if (!isBatchSyncRunning) {
                     newlyFailedTransfers.firstOrNull()?.let { failed ->
                         val prefix = if (failed.type == TransferType.UPLOAD) "上传失败" else "下载失败"
@@ -238,6 +267,14 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
     fun openQrScanner(open: Boolean) = sessionCoordinator.openQrScanner(open)
     fun handleScannedQrContent(rawContent: String) = sessionCoordinator.handleScannedQrContent(rawContent)
     fun probeServerConnection() = sessionCoordinator.probeServerConnection()
+    fun startOAuthLogin(provider: KodOAuthProvider) = sessionCoordinator.startOAuthLogin(provider)
+    fun cancelOAuthLogin() = sessionCoordinator.cancelOAuthLogin()
+    fun completeOAuthLogin(
+        serverUrl: String,
+        cookieHeader: String,
+        tokenCandidate: String = "",
+        silentOnNotLoggedIn: Boolean = true
+    ) = sessionCoordinator.completeOAuthLogin(serverUrl, cookieHeader, tokenCandidate, silentOnNotLoggedIn)
     fun refreshCaptcha() = sessionCoordinator.refreshCaptcha()
     fun submitLogin() = sessionCoordinator.submitLogin()
     fun openAddAccountLogin() = sessionCoordinator.openAddAccountLogin()
@@ -245,6 +282,8 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
     fun switchAccount(account: KodAccount) = sessionCoordinator.switchAccount(account)
     fun logoutAccount(account: KodAccount) = sessionCoordinator.logoutAccount(account)
     fun refreshAccountQuota(accountOverride: KodAccount? = null) = sessionCoordinator.refreshAccountQuota(accountOverride)
+    fun saveAccountLanEndpoint(lanServerUrl: String, preferLan: Boolean) = sessionCoordinator.saveAccountLanEndpoint(lanServerUrl, preferLan)
+    fun probeActiveEndpoint() = sessionCoordinator.probeActiveEndpoint()
     fun checkSessionOnResume() {
         val state = _uiState.value
         val account = state.activeAccount ?: return
@@ -277,6 +316,12 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
         sessionCoordinator.updateAccountProfile(nickName, email, phone, sex)
     fun changeAccountPassword(oldPassword: String, newPassword: String) =
         sessionCoordinator.changeAccountPassword(oldPassword, newPassword)
+    fun setAutoCheckUpdates(autoCheck: Boolean) =
+        sessionCoordinator.setAutoCheckUpdates(autoCheck)
+    fun checkForUpdates(manual: Boolean = true) =
+        sessionCoordinator.checkForUpdates(manual)
+    fun dismissUpdateDialog() = sessionCoordinator.dismissUpdateDialog()
+    fun openUpdateDownload() = sessionCoordinator.openUpdateDownload()
 
     // Tabs & Files
     fun selectTab(tab: MainTab) {
@@ -378,8 +423,14 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
     fun closePreview() = filesCoordinator.closePreview()
 
     // Shares & Media
-    fun showShareDialog(item: KodFileItem?) = shareAndMediaCoordinator.showShareDialog(item)
+    fun showShareDialog(item: KodFileItem?, initialTab: ShareDialogTab = ShareDialogTab.EXTERNAL_LINK) =
+        shareAndMediaCoordinator.showShareDialog(item, initialTab)
+    fun ensureCollabDataLoaded() = shareAndMediaCoordinator.ensureCollabDataLoaded()
     fun showEditShareDialog(share: KodShareItem?) = shareAndMediaCoordinator.showEditShareDialog(share)
+    fun showEditCollabShare(share: KodShareItem) = shareAndMediaCoordinator.showEditCollabShare(share)
+    fun searchCollabTargets(query: String) = shareAndMediaCoordinator.searchCollabTargets(query)
+    fun saveInternalCollabShare(item: KodFileItem, assignments: List<KodCollabAssignment>) =
+        shareAndMediaCoordinator.saveInternalCollabShare(item, assignments)
     fun selectShareSubTab(subTab: ShareSubTab) = shareAndMediaCoordinator.selectShareSubTab(subTab)
     fun loadShares() = shareAndMediaCoordinator.loadShares()
     fun openSharedResource(path: String, title: String, isFolder: Boolean, ext: String = "", size: Long = 0L) =
@@ -388,7 +439,12 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
         shareAndMediaCoordinator.createShareLink(item, password, expireEpochSeconds, accessMode)
     fun updateExistingShare(share: KodShareItem, password: String, expireEpochSeconds: Long, accessMode: ShareAccessMode) =
         shareAndMediaCoordinator.updateExistingShare(share, password, expireEpochSeconds, accessMode)
-    fun cancelShare(shareId: String) = shareAndMediaCoordinator.cancelShare(shareId)
+    fun cancelShare(
+        shareId: String,
+        path: String = "",
+        sourceId: String = "",
+        cancelMode: ShareCancelMode = ShareCancelMode.ALL
+    ) = shareAndMediaCoordinator.cancelShare(shareId, path, sourceId, cancelMode)
     fun setMediaFilter(filter: String) = shareAndMediaCoordinator.setMediaFilter(filter)
     fun loadMediaItems() = shareAndMediaCoordinator.loadMediaItems()
     fun copyText(label: String, text: String) {
@@ -404,13 +460,16 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
         remoteFolderLabel: String,
         direction: SyncDirection,
         frequency: SyncFrequency,
-        wifiOnly: Boolean
+        wifiOnly: Boolean,
+        conflictPolicy: SyncConflictPolicy = SyncConflictPolicy.KEEP_BOTH_CONFLICT_COPY,
+        ignoreHiddenFiles: Boolean = true
     ) = syncAndTransferCoordinator.createSyncRule(
-        name, localTreeUri, localFolderLabel, remotePath, remoteFolderLabel, direction, frequency, wifiOnly
+        name, localTreeUri, localFolderLabel, remotePath, remoteFolderLabel, direction, frequency, wifiOnly, conflictPolicy, ignoreHiddenFiles
     )
     fun toggleSyncRuleEnabled(rule: SyncRule, enabled: Boolean) = syncAndTransferCoordinator.toggleSyncRuleEnabled(rule, enabled)
     fun updateSyncRuleFrequency(rule: SyncRule, frequency: SyncFrequency) = syncAndTransferCoordinator.updateSyncRuleFrequency(rule, frequency)
     fun updateSyncRuleDirection(rule: SyncRule, direction: SyncDirection) = syncAndTransferCoordinator.updateSyncRuleDirection(rule, direction)
+    fun updateSyncRuleConflictPolicy(rule: SyncRule, policy: SyncConflictPolicy) = syncAndTransferCoordinator.updateSyncRuleConflictPolicy(rule, policy)
     fun deleteSyncRule(rule: SyncRule) = syncAndTransferCoordinator.deleteSyncRule(rule)
     fun runSyncRuleNow(rule: SyncRule) = syncAndTransferCoordinator.runSyncRuleNow(rule)
     fun runAllSyncRulesNow() = syncAndTransferCoordinator.runAllSyncRulesNow()
@@ -420,6 +479,7 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
     fun cancelTransfer(taskId: String) = syncAndTransferCoordinator.cancelTransfer(taskId)
     fun clearFinishedTransfers() = syncAndTransferCoordinator.clearFinishedTransfers()
     fun openDownloadedTransfer(task: TransferTask) = syncAndTransferCoordinator.openDownloadedTransfer(task)
+    fun shareDownloadedTransfer(task: TransferTask) = syncAndTransferCoordinator.shareDownloadedTransfer(task)
 
     private fun emitMessage(message: String) {
         _events.tryEmit(KodUiEvent.ShowMessage(message, isError = false))

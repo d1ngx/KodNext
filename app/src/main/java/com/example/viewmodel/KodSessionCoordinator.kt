@@ -2,6 +2,8 @@ package com.example.viewmodel
 
 import android.app.Application
 import coil.ImageLoader
+import com.example.BuildConfig
+import com.example.data.KodAppUpdateChecker
 import com.example.data.KodBoxApiClient
 import com.example.data.KodQrLoginParser
 import com.example.data.KodQrPayload
@@ -9,13 +11,16 @@ import com.example.data.repository.AuthRepository
 import com.example.data.repository.FileRepository
 import com.example.model.AppPreferences
 import com.example.model.KodAccount
+import com.example.model.KodOAuthProvider
 import com.example.model.KodWorkspaceApp
 import com.example.model.MainTab
 import com.example.model.ThemePreference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -23,7 +28,7 @@ import java.io.File
 
 /**
  * Focused domain coordinator for authentication, 2-step server onboarding, QR login,
- * multi-account switching, Account Center, Workspace Apps, and Settings/Cache.
+ * multi-account switching, Account Center, Workspace Apps, App Updates, and Settings/Cache.
  */
 internal class KodSessionCoordinator(
     private val application: Application,
@@ -31,12 +36,16 @@ internal class KodSessionCoordinator(
     private val uiState: MutableStateFlow<KodUiState>,
     private val authRepository: AuthRepository,
     private val fileRepository: FileRepository,
+    private val updateChecker: KodAppUpdateChecker,
     private val emitMessage: (String) -> Unit,
     private val emitError: (String) -> Unit,
+    private val emitOpenExternalUrl: (String) -> Unit,
     private val onRefreshCurrentDirectory: () -> Unit
 ) {
     private var activeAccountImageLoader: ImageLoader? = null
     private var activeLoaderKey: String? = null
+    private var oauthProbeJob: Job? = null
+    private var oauthCompleting: Boolean = false
 
     fun getAuthenticatedImageLoader(): ImageLoader {
         val acc = uiState.value.activeAccount
@@ -62,15 +71,118 @@ internal class KodSessionCoordinator(
     }
 
     fun updateLoginForm(transform: (LoginFormState) -> LoginFormState) {
-        uiState.update { it.copy(loginForm = transform(it.loginForm).copy(errorMessage = null)) }
+        oauthProbeJob?.cancel()
+        uiState.update {
+            it.copy(
+                loginForm = transform(it.loginForm).copy(
+                    isCheckingOAuth = false,
+                    errorMessage = null
+                )
+            )
+        }
+    }
+
+    private fun scheduleQuietOAuthDetection(rawUrl: String) {
+        oauthProbeJob?.cancel()
+        val trimmed = rawUrl.trim()
+        val looksLikeHost = trimmed.length >= 4 &&
+            !trimmed.contains(" ") &&
+            (trimmed.contains(".") || trimmed.startsWith("localhost", ignoreCase = true) || trimmed.contains(":"))
+        if (!looksLikeHost) {
+            uiState.update { it.copy(loginForm = it.loginForm.copy(isCheckingOAuth = false)) }
+            return
+        }
+        oauthProbeJob = scope.launch {
+            delay(650L)
+            val currentForm = uiState.value.loginForm
+            if (currentForm.step != LoginStep.SERVER_URL || currentForm.serverUrl.trim() != trimmed || currentForm.isProbing) {
+                return@launch
+            }
+            uiState.update { it.copy(loginForm = it.loginForm.copy(isCheckingOAuth = true)) }
+            val probe = authRepository.probeServer(trimmed).getOrNull()
+            // Apply only if the user hasn't edited the URL or left Step 1 while probing
+            uiState.update { state ->
+                if (state.loginForm.serverUrl.trim() != trimmed) {
+                    state
+                } else if (probe != null && probe.reachable) {
+                    state.copy(
+                        loginForm = state.loginForm.copy(
+                            isCheckingOAuth = false,
+                            probeInfo = probe
+                        )
+                    )
+                } else {
+                    state.copy(
+                        loginForm = state.loginForm.copy(isCheckingOAuth = false)
+                    )
+                }
+            }
+        }
+    }
+
+    fun startOAuthLogin(provider: KodOAuthProvider) {
+        val form = uiState.value.loginForm
+        val serverUrl = form.probeInfo?.normalizedUrl?.ifBlank { form.serverUrl } ?: form.serverUrl
+        if (serverUrl.isBlank()) {
+            emitError("请先输入网盘服务器地址")
+            return
+        }
+        oauthCompleting = false
+        uiState.update {
+            it.copy(
+                activeOAuthSession = OAuthLoginSession(
+                    serverUrl = serverUrl.trim().trimEnd('/'),
+                    provider = provider
+                )
+            )
+        }
+    }
+
+    fun cancelOAuthLogin() {
+        oauthCompleting = false
+        uiState.update { it.copy(activeOAuthSession = null) }
+    }
+
+    fun completeOAuthLogin(
+        serverUrl: String,
+        cookieHeader: String,
+        tokenCandidate: String = "",
+        silentOnNotLoggedIn: Boolean = true
+    ) {
+        if (oauthCompleting) return
+        oauthCompleting = true
+        scope.launch {
+            authRepository.loginWithWebViewSession(serverUrl, cookieHeader, tokenCandidate).fold(
+                onSuccess = { account ->
+                    oauthCompleting = false
+                    uiState.update {
+                        it.copy(
+                            activeOAuthSession = null,
+                            showAddAccountLogin = false,
+                            loginForm = LoginFormState(),
+                            sessionExpiredNotice = null,
+                            activeTab = MainTab.HOME
+                        )
+                    }
+                    emitMessage("第三方登录成功：${account.siteName} (${account.displayName})")
+                },
+                onFailure = { err ->
+                    oauthCompleting = false
+                    if (!silentOnNotLoggedIn) {
+                        emitError(err.message ?: "尚未检测到登录完成，请先在页面中完成第三方授权")
+                    }
+                }
+            )
+        }
     }
 
     fun resetLoginToServerStep() {
+        oauthProbeJob?.cancel()
         uiState.update {
             it.copy(
                 loginForm = it.loginForm.copy(
                     step = LoginStep.SERVER_URL,
-                    probeInfo = null,
+                    isCheckingOAuth = false,
                     captchaBytes = null,
                     checkCode = "",
                     infoMessage = null,
@@ -542,13 +654,20 @@ internal class KodSessionCoordinator(
     fun refreshAccountQuota(accountOverride: KodAccount? = null) {
         val account = accountOverride ?: uiState.value.activeAccount ?: return
         scope.launch {
+            val routeStatus = authRepository.probeAccountEndpoint(application, account)
+            uiState.update { it.copy(activeEndpointStatus = routeStatus) }
             authRepository.refreshAccountInfo(account).fold(
                 onSuccess = { refreshed ->
                     loadServerPlugins(refreshed)
+                    val routeTag = if (routeStatus.mode == com.example.data.EndpointMode.LAN) {
+                        "局域网直连 (${routeStatus.latencyMs}ms)"
+                    } else {
+                        "公网线路"
+                    }
                     uiState.update {
                         it.copy(
                             sessionExpiredNotice = if (it.sessionExpiredNotice?.accountId == refreshed.id) null else it.sessionExpiredNotice,
-                            serverHealthMessage = "连接正常 · 服务端 ${refreshed.serverVersion.ifBlank { "已就绪" }}"
+                            serverHealthMessage = "连接正常 · $routeTag · 服务端 ${refreshed.serverVersion.ifBlank { "已就绪" }}"
                         )
                     }
                 },
@@ -561,6 +680,55 @@ internal class KodSessionCoordinator(
                     }
                 }
             )
+        }
+    }
+
+    fun saveAccountLanEndpoint(rawLanUrl: String, preferLan: Boolean) {
+        val account = uiState.value.activeAccount ?: return
+        val trimmed = rawLanUrl.trim()
+        val normalized = com.example.data.KodEndpointResolver.normalizeOptionalLanUrl(trimmed)
+        if (trimmed.isNotBlank() && normalized.isBlank()) {
+            emitError("局域网地址格式无效，请输入如 http://192.168.1.10:8080")
+            return
+        }
+        scope.launch {
+            uiState.update { it.copy(isProbingEndpoint = true) }
+            val updated = authRepository.updateAccountLanEndpoint(account, normalized, preferLan)
+            val routeStatus = authRepository.probeAccountEndpoint(application, updated)
+            uiState.update {
+                it.copy(
+                    activeEndpointStatus = routeStatus,
+                    isProbingEndpoint = false
+                )
+            }
+            val msg = when {
+                normalized.isBlank() -> "已清除局域网地址，当前使用公网线路"
+                !preferLan -> "已保存局域网地址（已关闭自动优先局域网）"
+                routeStatus.mode == com.example.data.EndpointMode.LAN ->
+                    "局域网直连已生效 (${routeStatus.latencyMs}ms)：${routeStatus.activeBaseUrl}"
+                else -> "已保存局域网地址，当前未在局域网环境，已自动走公网线路"
+            }
+            emitMessage(msg)
+        }
+    }
+
+    fun probeActiveEndpoint() {
+        val account = uiState.value.activeAccount ?: return
+        scope.launch {
+            uiState.update { it.copy(isProbingEndpoint = true) }
+            val routeStatus = authRepository.probeAccountEndpoint(application, account)
+            uiState.update {
+                it.copy(
+                    activeEndpointStatus = routeStatus,
+                    isProbingEndpoint = false
+                )
+            }
+            val msg = if (routeStatus.mode == com.example.data.EndpointMode.LAN) {
+                "已切换至局域网直连 (${routeStatus.latencyMs}ms)"
+            } else {
+                "局域网不可达或未配置，当前使用公网线路"
+            }
+            emitMessage(msg)
         }
     }
 
@@ -747,6 +915,93 @@ internal class KodSessionCoordinator(
                 }
             )
         }
+    }
+
+    fun setAutoCheckUpdates(autoCheck: Boolean) {
+        scope.launch {
+            authRepository.updatePreferences {
+                it.copy(autoCheckUpdates = autoCheck)
+            }
+        }
+    }
+
+    fun checkForUpdates(manual: Boolean) {
+        val targetUrl = KodAppUpdateChecker.fixedUpdateUrl()
+        if (targetUrl.isBlank()) {
+            if (manual) {
+                uiState.update { it.copy(updateStatusMessage = "当前安装包未内置更新地址") }
+                emitMessage("当前安装包未内置更新地址")
+            }
+            return
+        }
+        if (uiState.value.isCheckingUpdate) return
+
+        scope.launch {
+            uiState.update {
+                it.copy(
+                    isCheckingUpdate = true,
+                    updateStatusMessage = "正在检测更新…"
+                )
+            }
+            updateChecker.checkForUpdate(
+                siteOrManifestUrl = targetUrl,
+                currentVersionName = BuildConfig.VERSION_NAME,
+                currentVersionCode = BuildConfig.VERSION_CODE
+            ).fold(
+                onSuccess = { updateInfo ->
+                    if (updateInfo != null) {
+                        uiState.update {
+                            it.copy(
+                                isCheckingUpdate = false,
+                                availableUpdate = updateInfo,
+                                updateDialogDismissed = false,
+                                updateStatusMessage = "发现新版本 v${updateInfo.versionName}"
+                            )
+                        }
+                        if (manual) {
+                            emitMessage("发现新版本 v${updateInfo.versionName}")
+                        }
+                    } else {
+                        uiState.update {
+                            it.copy(
+                                isCheckingUpdate = false,
+                                availableUpdate = null,
+                                updateStatusMessage = "当前已是最新版本 v${BuildConfig.VERSION_NAME}"
+                            )
+                        }
+                        if (manual) {
+                            emitMessage("当前已是最新版本 v${BuildConfig.VERSION_NAME}")
+                        }
+                    }
+                },
+                onFailure = { err ->
+                    val msg = err.message?.takeIf { it.isNotBlank() } ?: "无法连接更新站点"
+                    uiState.update {
+                        it.copy(
+                            isCheckingUpdate = false,
+                            updateStatusMessage = "检测失败：$msg"
+                        )
+                    }
+                    if (manual) {
+                        emitError("检测更新失败：$msg")
+                    }
+                }
+            )
+        }
+    }
+
+    fun dismissUpdateDialog() {
+        uiState.update { it.copy(updateDialogDismissed = true) }
+    }
+
+    fun openUpdateDownload() {
+        val url = uiState.value.availableUpdate?.downloadUrl?.trim().orEmpty()
+        if (url.isBlank()) {
+            emitError("更新包下载地址无效")
+            return
+        }
+        uiState.update { it.copy(updateDialogDismissed = true) }
+        emitOpenExternalUrl(url)
     }
 
     private fun calculateDirSize(dir: File?): Long {

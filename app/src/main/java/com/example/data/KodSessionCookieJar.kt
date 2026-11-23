@@ -79,4 +79,8 @@ class KodSessionCookieJar : CookieJar {
     fun clearHost(host: String) {
         store.remove(host)
     }
+
+    fun clear() {
+        store.clear()
+    }
 }

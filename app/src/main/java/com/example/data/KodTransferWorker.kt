@@ -2,6 +2,7 @@ package com.example.data
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.ServiceInfo
@@ -22,6 +23,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -64,10 +66,18 @@ class KodTransferWorker(
 
         val transferType = runCatching { TransferType.valueOf(taskEntity.type) }.getOrDefault(TransferType.DOWNLOAD)
         val notificationId = NOTIFICATION_BASE_ID + (taskId.hashCode() and 0x0FFF)
+        // Android 15 enforces a 6-hour/24h quota on dataSync foreground services:
+        // only promote transfers >= 4 MB (or unknown size) to foreground service so small files
+        // finish swiftly under standard WorkManager execution without consuming FGS quota.
+        val shouldUseForegroundService = taskEntity.totalBytes <= 0L ||
+            taskEntity.totalBytes >= FGS_MIN_FILE_SIZE_BYTES
+        var foregroundActive = false
 
-        // Promote to foreground gracefully (never crash if POST_NOTIFICATIONS is denied on Android 13+)
-        runCatching {
-            setForeground(createForegroundInfo(notificationId, taskEntity.fileName, transferType, 0, true))
+        if (shouldUseForegroundService) {
+            foregroundActive = runCatching {
+                setForeground(createForegroundInfo(notificationId, taskEntity.fileName, transferType, 0, true))
+                true
+            }.getOrDefault(false)
         }
 
         var lastPersistedAt = 0L
@@ -84,16 +94,18 @@ class KodTransferWorker(
                     runCatching {
                         transferRepo.updateProgress(taskId, ratio, transferred, total.coerceAtLeast(transferred))
                     }
-                    runCatching {
-                        setForeground(
-                            createForegroundInfo(
-                                notificationId = notificationId,
-                                fileName = taskEntity.fileName,
-                                type = transferType,
-                                percent = percent,
-                                indeterminate = total <= 0L
+                    if (foregroundActive) {
+                        runCatching {
+                            setForeground(
+                                createForegroundInfo(
+                                    notificationId = notificationId,
+                                    fileName = taskEntity.fileName,
+                                    type = transferType,
+                                    percent = percent,
+                                    indeterminate = total <= 0L
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }
@@ -118,6 +130,15 @@ class KodTransferWorker(
                     val mime = taskEntity.mimeType.ifBlank {
                         resolver.getType(uri) ?: "application/octet-stream"
                     }
+                    val prefs = runCatching { container.accountStore.preferencesFlow.first() }.getOrNull()
+                    val preferredChunkMb = prefs?.uploadChunkSizeMb ?: KodUploadResilience.DEFAULT_CHUNK_MB
+                    val maxConcurrency = prefs?.maxConcurrentUploads ?: KodUploadResilience.DEFAULT_CONCURRENCY
+                    val expectedChunkBytes = KodUploadResilience.resolveEffectiveChunkSizeBytes(preferredChunkMb)
+                    val resumeChunk = if (taskEntity.completedChunks > 0 && taskEntity.chunkSizeBytes == expectedChunkBytes) {
+                        taskEntity.completedChunks
+                    } else {
+                        0
+                    }
                     val outcome = apiClient.uploadFile(
                         account = account,
                         targetDir = taskEntity.remotePath,
@@ -125,6 +146,16 @@ class KodTransferWorker(
                         mimeType = mime,
                         inputStreamProvider = { resolver.openInputStream(uri) },
                         totalBytes = taskEntity.totalBytes,
+                        preferredChunkSizeMb = preferredChunkMb,
+                        maxConcurrentUploads = maxConcurrency,
+                        resumeFromChunk = resumeChunk,
+                        onChunkConfirmed = { completedChunks, chunkSizeBytes ->
+                            progressScope.launch {
+                                runCatching {
+                                    transferRepo.updateChunkCheckpoint(taskId, completedChunks, chunkSizeBytes)
+                                }
+                            }
+                        },
                         onProgress = ::handleProgress
                     )
                     outcome.fold(
@@ -179,6 +210,7 @@ class KodTransferWorker(
                                 localPath = saved.absolutePath,
                                 errorMessage = ""
                             )
+                            postDownloadCompletedNotification(notificationId + 10_000, saved, ext)
                             Result.success()
                         },
                         onFailure = { err ->
@@ -293,10 +325,49 @@ class KodTransferWorker(
         }
     }
 
+    private fun postDownloadCompletedNotification(notificationId: Int, file: File, ext: String) {
+        runCatching {
+            val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                ?: return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                manager.getNotificationChannel(COMPLETED_CHANNEL_ID) == null
+            ) {
+                val channel = NotificationChannel(
+                    COMPLETED_CHANNEL_ID,
+                    "文件下载完成",
+                    NotificationManager.IMPORTANCE_DEFAULT
+                ).apply {
+                    description = "文件下载完成后提示并支持点击打开"
+                }
+                manager.createNotificationChannel(channel)
+            }
+
+            val mime = LocalFileOpener.resolveMimeType(file, KodFormatters.mimeTypeForExtension(ext))
+            val viewIntent = LocalFileOpener.buildViewIntent(applicationContext, file, mime)
+            val pendingIntent = PendingIntent.getActivity(
+                applicationContext,
+                notificationId,
+                viewIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = NotificationCompat.Builder(applicationContext, COMPLETED_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setContentTitle("下载完成，点击打开")
+                .setContentText("${file.name} (${KodFormatters.formatBytes(file.length())})")
+                .setAutoCancel(true)
+                .setContentIntent(pendingIntent)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .build()
+            manager.notify(notificationId, notification)
+        }
+    }
+
     companion object {
         const val KEY_TASK_ID = "transfer_task_id"
         private const val CHANNEL_ID = "kodnext_transfers"
+        private const val COMPLETED_CHANNEL_ID = "kodnext_downloads_done"
         private const val NOTIFICATION_BASE_ID = 4100
         private const val PROGRESS_THROTTLE_MS = 250L
+        private const val FGS_MIN_FILE_SIZE_BYTES = 4L * 1024L * 1024L
     }
 }

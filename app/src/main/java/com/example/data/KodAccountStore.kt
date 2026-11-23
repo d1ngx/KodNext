@@ -2,9 +2,12 @@ package com.example.data
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.data.security.AccountSecret
@@ -26,7 +29,12 @@ import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 import org.json.JSONObject
 
-private val Context.kodDataStore: DataStore<Preferences> by preferencesDataStore(name = "kodnext_prefs")
+private val Context.kodDataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "kodnext_prefs",
+    corruptionHandler = ReplaceFileCorruptionHandler(
+        produceNewData = { emptyPreferences() }
+    )
+)
 
 /**
  * Stores non-sensitive account metadata and user preferences in Preferences DataStore,
@@ -48,6 +56,10 @@ class KodAccountStore(
         val SHOW_THUMBNAILS = booleanPreferencesKey("show_thumbnails")
         val THEME_PREF = stringPreferencesKey("theme_pref")
         val PINNED_APP_ID = stringPreferencesKey("pinned_app_id")
+        val LEGACY_UPDATE_CHECK_URL = stringPreferencesKey("update_check_url")
+        val AUTO_CHECK_UPDATES = booleanPreferencesKey("auto_check_updates")
+        val UPLOAD_CHUNK_SIZE_MB = intPreferencesKey("upload_chunk_size_mb")
+        val MAX_CONCURRENT_UPLOADS = intPreferencesKey("max_concurrent_uploads")
         val LEGACY_SYNC_RULES_JSON = stringPreferencesKey("sync_rules_json")
     }
 
@@ -70,7 +82,12 @@ class KodAccountStore(
             showHiddenFiles = prefs[Keys.SHOW_HIDDEN] ?: false,
             showThumbnails = prefs[Keys.SHOW_THUMBNAILS] ?: true,
             themePreference = runCatching { ThemePreference.valueOf(prefs[Keys.THEME_PREF] ?: ThemePreference.SYSTEM.name) }.getOrDefault(ThemePreference.SYSTEM),
-            pinnedAppId = prefs[Keys.PINNED_APP_ID] ?: "project"
+            pinnedAppId = prefs[Keys.PINNED_APP_ID] ?: "project",
+            autoCheckUpdates = prefs[Keys.AUTO_CHECK_UPDATES] ?: true,
+            uploadChunkSizeMb = (prefs[Keys.UPLOAD_CHUNK_SIZE_MB] ?: KodUploadResilience.DEFAULT_CHUNK_MB)
+                .coerceIn(KodUploadResilience.MIN_CHUNK_MB, KodUploadResilience.MAX_SAFE_CHUNK_MB),
+            maxConcurrentUploads = (prefs[Keys.MAX_CONCURRENT_UPLOADS] ?: KodUploadResilience.DEFAULT_CONCURRENCY)
+                .coerceIn(KodUploadResilience.MIN_CONCURRENCY, KodUploadResilience.MAX_CONCURRENCY)
         )
     }
 
@@ -191,7 +208,12 @@ class KodAccountStore(
                 showHiddenFiles = prefs[Keys.SHOW_HIDDEN] ?: false,
                 showThumbnails = prefs[Keys.SHOW_THUMBNAILS] ?: true,
                 themePreference = runCatching { ThemePreference.valueOf(prefs[Keys.THEME_PREF] ?: ThemePreference.SYSTEM.name) }.getOrDefault(ThemePreference.SYSTEM),
-                pinnedAppId = prefs[Keys.PINNED_APP_ID] ?: "project"
+                pinnedAppId = prefs[Keys.PINNED_APP_ID] ?: "project",
+                autoCheckUpdates = prefs[Keys.AUTO_CHECK_UPDATES] ?: true,
+                uploadChunkSizeMb = (prefs[Keys.UPLOAD_CHUNK_SIZE_MB] ?: KodUploadResilience.DEFAULT_CHUNK_MB)
+                    .coerceIn(KodUploadResilience.MIN_CHUNK_MB, KodUploadResilience.MAX_SAFE_CHUNK_MB),
+                maxConcurrentUploads = (prefs[Keys.MAX_CONCURRENT_UPLOADS] ?: KodUploadResilience.DEFAULT_CONCURRENCY)
+                    .coerceIn(KodUploadResilience.MIN_CONCURRENCY, KodUploadResilience.MAX_CONCURRENCY)
             )
             val updated = transform(current)
             prefs[Keys.VIEW_MODE] = updated.viewMode.name
@@ -201,6 +223,12 @@ class KodAccountStore(
             prefs[Keys.SHOW_THUMBNAILS] = updated.showThumbnails
             prefs[Keys.THEME_PREF] = updated.themePreference.name
             prefs[Keys.PINNED_APP_ID] = updated.pinnedAppId
+            prefs.remove(Keys.LEGACY_UPDATE_CHECK_URL)
+            prefs[Keys.AUTO_CHECK_UPDATES] = updated.autoCheckUpdates
+            prefs[Keys.UPLOAD_CHUNK_SIZE_MB] = updated.uploadChunkSizeMb
+                .coerceIn(KodUploadResilience.MIN_CHUNK_MB, KodUploadResilience.MAX_SAFE_CHUNK_MB)
+            prefs[Keys.MAX_CONCURRENT_UPLOADS] = updated.maxConcurrentUploads
+                .coerceIn(KodUploadResilience.MIN_CONCURRENCY, KodUploadResilience.MAX_CONCURRENCY)
         }
     }
 
@@ -229,6 +257,8 @@ class KodAccountStore(
                     put("personalRootPath", acc.personalRootPath)
                     put("groupRootPath", acc.groupRootPath)
                     put("lastLoginAt", acc.lastLoginAt)
+                    put("lanServerUrl", acc.lanServerUrl)
+                    put("preferLan", acc.preferLan)
                 }
             )
         }
@@ -283,7 +313,9 @@ class KodAccountStore(
                             groupRootPath = obj.optString("groupRootPath", "{block:enterprise}/").let {
                                 if (it == "{block:files}/" || it.isBlank()) "{block:enterprise}/" else it
                             },
-                            lastLoginAt = obj.optLong("lastLoginAt", 0L)
+                            lastLoginAt = obj.optLong("lastLoginAt", 0L),
+                            lanServerUrl = obj.optString("lanServerUrl", ""),
+                            preferLan = obj.optBoolean("preferLan", true)
                         )
                     )
                 }

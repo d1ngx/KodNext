@@ -24,6 +24,67 @@ enum class ShareAccessMode(val label: String, val subtitle: String, val notDownl
     READ_WRITE("读写协作（可上传与编辑）", "访客可查看、下载，并允许向该目录上传或编辑文件", false, false, true)
 }
 
+enum class ShareDialogTab(val label: String) {
+    EXTERNAL_LINK("外链分享"),
+    INTERNAL_COLLAB("内部协作")
+}
+
+enum class ShareCancelMode {
+    ALL,
+    EXTERNAL_LINK_ONLY,
+    INTERNAL_COLLAB_ONLY
+}
+
+enum class KodCollabTargetType(val kodCode: String, val label: String) {
+    USER("1", "成员"),
+    GROUP("2", "部门")
+}
+
+data class KodCollabTarget(
+    val targetType: KodCollabTargetType,
+    val targetId: String,
+    val name: String,
+    val subtitle: String = "",
+    val avatarUrl: String = ""
+) {
+    val uniqueKey: String get() = "${targetType.kodCode}:$targetId"
+}
+
+data class KodCollabAuthRole(
+    val authId: String,
+    val name: String,
+    val description: String = ""
+) {
+    companion object {
+        val DEFAULT_ROLES = listOf(
+            KodCollabAuthRole("3", "查看下载", "可在线预览与下载文件"),
+            KodCollabAuthRole("2", "编辑协作", "可查看、下载、上传与编辑"),
+            KodCollabAuthRole("4", "仅预览", "仅可在线预览，禁止下载"),
+            KodCollabAuthRole("1", "拥有者", "完全管理权限")
+        )
+    }
+}
+
+data class KodCollabAssignment(
+    val target: KodCollabTarget,
+    val authId: String,
+    val authName: String
+)
+
+data class KodExistingShareDetail(
+    val shareId: String = "",
+    val isLink: Boolean = false,
+    val isShareTo: Boolean = false,
+    val shareUrl: String = "",
+    val shareHash: String = "",
+    val password: String = "",
+    val timeTo: Long = 0L,
+    val notDownload: Boolean = false,
+    val notView: Boolean = false,
+    val canUpload: Boolean = false,
+    val assignments: List<KodCollabAssignment> = emptyList()
+)
+
 enum class SyncFrequency(val label: String, val intervalMinutes: Long) {
     REALTIME("实时同步", 15L),
     HOURLY("每小时", 60L),
@@ -44,6 +105,13 @@ enum class SyncRunStatus(val label: String) {
     ERROR("同步失败")
 }
 
+enum class SyncConflictPolicy(val label: String, val subtitle: String) {
+    KEEP_BOTH_CONFLICT_COPY("保留双方（冲突副本）", "双方同时修改时保留本地副本并下载云盘版本，绝不静默覆盖"),
+    NEWER_WINS("较新版本覆盖", "按文件修改时间自动保留较新的一侧"),
+    SERVER_WINS("始终以云盘为准", "发生冲突时用云盘文件覆盖本地"),
+    LOCAL_WINS("始终以本地为准", "发生冲突时用本地文件覆盖云盘")
+}
+
 data class SyncRule(
     val id: String,
     val accountId: String,
@@ -58,7 +126,9 @@ data class SyncRule(
     val enabled: Boolean = true,
     val lastSyncTime: Long = 0L,
     val lastStatus: SyncRunStatus = SyncRunStatus.IDLE,
-    val lastSummary: String = "尚未执行过同步"
+    val lastSummary: String = "尚未执行过同步",
+    val conflictPolicy: SyncConflictPolicy = SyncConflictPolicy.KEEP_BOTH_CONFLICT_COPY,
+    val ignoreHiddenFiles: Boolean = true
 )
 
 enum class FilterFileType(val label: String) {
@@ -220,7 +290,7 @@ data class KodAdminOverview(
 
 enum class KodSpace(val label: String, val virtualPath: String, val isPrimarySpace: Boolean = false) {
     PERSONAL("个人空间", "", isPrimarySpace = true),
-    ENTERPRISE("企业网盘", "{block:enterprise}/", isPrimarySpace = true),
+    ENTERPRISE("共享空间", "{block:enterprise}/", isPrimarySpace = true),
     FAVORITES("收藏夹", "{userFav}/", isPrimarySpace = true),
     SHARED_WITH_ME("与我协作", "{shareToMe}/", isPrimarySpace = true),
     RECENT("最近文档", "{userRencent}/", isPrimarySpace = false),
@@ -270,7 +340,9 @@ data class KodAccount(
     val siteName: String = "网盘",
     val personalRootPath: String = "{source:1}/",
     val groupRootPath: String = "{block:enterprise}/",
-    val lastLoginAt: Long = System.currentTimeMillis()
+    val lastLoginAt: Long = System.currentTimeMillis(),
+    val lanServerUrl: String = "",
+    val preferLan: Boolean = true
 ) {
     val displayName: String
         get() = nickName.ifBlank { username }
@@ -314,8 +386,39 @@ data class KodFileItem(
     val isReadable: Boolean = true,
     val isWriteable: Boolean = true,
     val isRecycleItem: Boolean = false,
-    val childCount: Int = 0
+    val childCount: Int = 0,
+    val displayPath: String = "",
+    val isSpecialDirectory: Boolean = false,
+    val isDepartmentFolder: Boolean = false
 ) {
+    /**
+     * Whether this file or folder supports creating/managing external links or internal collaboration
+     * shares. Virtual KodBox buckets (e.g. 企业网盘, 我所在的部门, 文档分类, 文件标签, 回收站, 部门根空间)
+     * do not represent shareable user files and must not display share buttons.
+     */
+    val canShare: Boolean
+        get() {
+            if (isRecycleItem || isSpecialDirectory || isDepartmentFolder) return false
+            val p = path.trim().lowercase()
+            if (p.isBlank()) return false
+            val nonShareablePrefixes = listOf(
+                "{block:",
+                "{group",
+                "{userfav",
+                "{userrecycle",
+                "{userfiletype",
+                "{userfiletag",
+                "{usershare",
+                "{sharetome",
+                "{userrencent",
+                "{search",
+                "{shareitem:"
+            )
+            if (nonShareablePrefixes.any { p.startsWith(it) }) return false
+            if (isFolder && sourceId.isBlank() && !p.startsWith("{source:") && !p.startsWith("{io:")) return false
+            return true
+        }
+
     val normalizedExt: String
         get() = ext.ifBlank {
             if (!isFolder && name.contains('.')) name.substringAfterLast('.').lowercase() else ""
@@ -332,9 +435,9 @@ data class KodFileItem(
 
     val isOfficeDocument: Boolean
         get() = !isFolder && normalizedExt in setOf(
-            "doc", "docx", "docm", "dot", "dotx", "dotm", "odt", "rtf", "wps", "wpt",
-            "xls", "xlsx", "xlsb", "xlsm", "xlt", "xltx", "ods", "et", "ett",
-            "ppt", "pptx", "pptm", "pps", "ppsx", "ppsm", "pot", "potx", "potm", "odp", "dps", "dpt", "xps"
+            "doc", "docx", "docm", "dot", "dotx", "dotm", "odt", "rtf", "wps", "wpt", "pages",
+            "xls", "xlsx", "xlsb", "xlsm", "xlt", "xltx", "ods", "et", "ett", "numbers",
+            "ppt", "pptx", "pptm", "pps", "ppsx", "ppsm", "pot", "potx", "potm", "odp", "dps", "dpt", "key", "xps"
         )
 
     val isPdf: Boolean
@@ -362,6 +465,21 @@ data class KodFileItem(
             "log", "csv", "html", "htm", "css", "js", "ts", "kt", "java", "py", "sh",
             "php", "sql", "c", "cpp", "h", "go", "rs", "toml", "properties"
         )
+
+    val supportsThumbnail: Boolean
+        get() = !isFolder && (
+            fileThumb.isNotBlank() ||
+                isImage ||
+                isVideo ||
+                isPdf ||
+                isOfficeDocument ||
+                isCadOr3d ||
+                isEbook ||
+                normalizedExt in setOf(
+                    "psd", "psb", "ai", "eps", "tif", "tiff",
+                    "raw", "dng", "cr2", "nef", "arw", "heif", "avif"
+                )
+            )
 }
 
 data class KodShareItem(
@@ -424,6 +542,13 @@ data class TransferTask(
             (type == TransferType.DOWNLOAD || sourceUri.isNotBlank())
 }
 
+data class KodOAuthProvider(
+    val id: String,
+    val displayName: String,
+    val authUrl: String,
+    val fallbackLoginUrl: String = ""
+)
+
 data class ServerProbeInfo(
     val normalizedUrl: String,
     val reachable: Boolean,
@@ -431,6 +556,8 @@ data class ServerProbeInfo(
     val version: String = "",
     val needCheckCode: Boolean = false,
     val csrfToken: String = "",
+    val oauthEnabled: Boolean = false,
+    val oauthProviders: List<KodOAuthProvider> = emptyList(),
     val errorMessage: String = ""
 )
 
@@ -441,7 +568,10 @@ data class AppPreferences(
     val showHiddenFiles: Boolean = false,
     val showThumbnails: Boolean = true,
     val themePreference: ThemePreference = ThemePreference.SYSTEM,
-    val pinnedAppId: String = "project"
+    val pinnedAppId: String = "project",
+    val autoCheckUpdates: Boolean = true,
+    val uploadChunkSizeMb: Int = 4,
+    val maxConcurrentUploads: Int = 2
 )
 
 data class PathListResult(

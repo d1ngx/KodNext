@@ -82,6 +82,7 @@ fun HomeTabContent(
     onEnterSpace: (KodSpace) -> Unit,
     onOpenShared: (ShareSubTab) -> Unit,
     onItemClick: (KodFileItem) -> Unit,
+    onItemShareClick: (KodFileItem) -> Unit,
     onItemMoreClick: (KodFileItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -150,7 +151,7 @@ fun HomeTabContent(
                     }
                 }
 
-                // 2. Dual Gradient Space Hero Cards (企业网盘 & 个人空间)
+                // 2. Dual Gradient Space Hero Cards (共享空间 & 个人空间)
                 item(key = "home_space_cards") {
                     Row(
                         modifier = Modifier
@@ -161,10 +162,10 @@ fun HomeTabContent(
                         val enterpriseSubtitle = if (account.departments.isNotEmpty()) {
                             "共 ${account.departments.size} 个部门 · ${account.siteName}"
                         } else {
-                            "${account.siteName} 共享空间"
+                            "${account.siteName} 团队共享文件"
                         }
                         HomeGradientSpaceCard(
-                            title = "企业网盘",
+                            title = KodSpace.ENTERPRISE.label,
                             subtitle = enterpriseSubtitle,
                             watermarkIcon = Icons.Filled.CorporateFare,
                             gradientColors = listOf(Color(0xFF2196F3), Color(0xFF0277BD)),
@@ -257,6 +258,13 @@ fun HomeTabContent(
                 }
 
                 val favPreview = state.homeFavorites.take(5)
+                val sharedKeys = buildSet {
+                    (state.shares + state.collabShares).forEach { s ->
+                        if (s.sourceId.isNotBlank()) add("id:${s.sourceId}")
+                        val p = s.path.trim().trimEnd('/')
+                        if (p.isNotBlank()) add("path:$p")
+                    }
+                }
                 if (favPreview.isEmpty()) {
                     item(key = "home_favorites_empty") {
                         HomeEmptySectionHint(
@@ -267,21 +275,26 @@ fun HomeTabContent(
                     itemsIndexed(
                         items = favPreview,
                         key = { _, item -> "fav_${item.path}" }
-                    ) { idx, item ->
+                    ) { idx, rawItem ->
+                        val isKnownShared = rawItem.isShare ||
+                            (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in sharedKeys) ||
+                            ("path:${rawItem.path.trim().trimEnd('/')}" in sharedKeys)
+                        val item = rawItem.copy(isFav = true, isShare = isKnownShared)
                         Surface(
                             color = MaterialTheme.colorScheme.surface,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column {
                                 NextcloudFileListItem(
-                                    item = item.copy(isFav = true),
-                                    thumbnailUrl = if (item.isImage) thumbnailUrlFor(item) else null,
+                                    item = item,
+                                    thumbnailUrl = if (item.supportsThumbnail) thumbnailUrlFor(item) else null,
                                     imageLoader = imageLoader,
                                     showThumbnails = state.preferences.showThumbnails,
                                     isSelected = false,
                                     isSelectionMode = false,
                                     onClick = { onItemClick(item) },
                                     onLongClick = { onItemMoreClick(item) },
+                                    onShareClick = if (item.canShare) { { onItemShareClick(item) } } else null,
                                     onMoreClick = { onItemMoreClick(item) }
                                 )
                                 if (idx < favPreview.lastIndex) {
@@ -315,7 +328,11 @@ fun HomeTabContent(
                     itemsIndexed(
                         items = recentPreview,
                         key = { _, item -> "recent_${item.path}" }
-                    ) { idx, item ->
+                    ) { idx, rawItem ->
+                        val isKnownShared = rawItem.isShare ||
+                            (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in sharedKeys) ||
+                            ("path:${rawItem.path.trim().trimEnd('/')}" in sharedKeys)
+                        val item = if (isKnownShared && !rawItem.isShare) rawItem.copy(isShare = true) else rawItem
                         Surface(
                             color = MaterialTheme.colorScheme.surface,
                             modifier = Modifier.fillMaxWidth()
@@ -323,13 +340,14 @@ fun HomeTabContent(
                             Column {
                                 NextcloudFileListItem(
                                     item = item,
-                                    thumbnailUrl = if (item.isImage) thumbnailUrlFor(item) else null,
+                                    thumbnailUrl = if (item.supportsThumbnail) thumbnailUrlFor(item) else null,
                                     imageLoader = imageLoader,
                                     showThumbnails = state.preferences.showThumbnails,
                                     isSelected = false,
                                     isSelectionMode = false,
                                     onClick = { onItemClick(item) },
                                     onLongClick = { onItemMoreClick(item) },
+                                    onShareClick = if (item.canShare) { { onItemShareClick(item) } } else null,
                                     onMoreClick = { onItemMoreClick(item) }
                                 )
                                 if (idx < recentPreview.lastIndex) {

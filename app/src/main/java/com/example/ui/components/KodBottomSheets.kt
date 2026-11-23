@@ -40,16 +40,12 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Unarchive
-import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.Casino
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DatePicker
-import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -60,18 +56,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberDatePickerState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -89,10 +78,9 @@ import com.example.model.FilterDateRange
 import com.example.model.FilterFileType
 import com.example.model.FilterSizeRange
 import com.example.model.KodFileItem
-import com.example.model.KodShareItem
+import com.example.model.KodSpace
 import com.example.model.KodTag
 import com.example.model.SearchFilterState
-import com.example.model.ShareAccessMode
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.viewmodel.FolderPickerState
 
@@ -117,6 +105,7 @@ fun FileActionBottomSheet(
     onDelete: () -> Unit
 ) {
     val visual = resolveFileVisual(item)
+    TrackModalOverlay()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -131,14 +120,18 @@ fun FileActionBottomSheet(
                     .padding(horizontal = 20.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(visual.tint.copy(alpha = 0.14f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(visual.icon, contentDescription = null, tint = visual.tint)
+                if (item.isFolder && item.isDepartmentFolder) {
+                    DepartmentFolderThumbnailIcon(compact = true)
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(visual.tint.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(visual.icon, contentDescription = null, tint = visual.tint)
+                    }
                 }
                 Spacer(modifier = Modifier.width(14.dp))
                 Column(modifier = Modifier.weight(1f)) {
@@ -150,13 +143,22 @@ fun FileActionBottomSheet(
                     )
                     Text(
                         text = if (item.isFolder) {
-                            "文件夹 · ${KodFormatters.formatTimestamp(item.modifyTime)}"
+                            "${if (item.isDepartmentFolder) "部门文件夹" else "文件夹"} · ${KodFormatters.formatTimestamp(item.modifyTime)}"
                         } else {
                             "${KodFormatters.formatBytes(item.size)} · ${KodFormatters.formatTimestamp(item.modifyTime)}"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if ((isRecycleBin || item.isRecycleItem) && item.displayPath.isNotBlank()) {
+                        Text(
+                            text = "原位置：${item.displayPath}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
 
@@ -196,12 +198,14 @@ fun FileActionBottomSheet(
                             modifier = Modifier.weight(1f)
                         )
                     }
-                    QuickActionTile(
-                        icon = Icons.Filled.Share,
-                        label = "外链分享",
-                        onClick = onShare,
-                        modifier = Modifier.weight(1f)
-                    )
+                    if (item.canShare) {
+                        QuickActionTile(
+                            icon = Icons.Filled.Share,
+                            label = "共享/协作",
+                            onClick = onShare,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                     QuickActionTile(
                         icon = if (item.isFav) Icons.Filled.Star else Icons.Filled.StarBorder,
                         label = if (item.isFav) "已收藏" else "收藏",
@@ -278,266 +282,6 @@ private fun ActionSheetRow(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
-@Composable
-fun KodShareConfigDialog(
-    titleName: String,
-    isFolder: Boolean,
-    initialPassword: String = "",
-    initialExpireEpochSeconds: Long = 0L,
-    initialAccessMode: ShareAccessMode = ShareAccessMode.READ_ONLY_DOWNLOAD,
-    isEditingExisting: Boolean = false,
-    createdShare: KodShareItem?,
-    isWorking: Boolean,
-    onSaveShare: (password: String, expireEpochSeconds: Long, accessMode: ShareAccessMode) -> Unit,
-    onCopyUrl: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var passwordEnabled by remember { mutableStateOf(initialPassword.isNotBlank()) }
-    var password by remember { mutableStateOf(initialPassword) }
-    var expirePreset by remember {
-        mutableIntStateOf(if (initialExpireEpochSeconds > 0L) -1 else 7)
-    }
-    var customExpireEpochSec by remember {
-        mutableLongStateOf(
-            if (initialExpireEpochSeconds > 0L) initialExpireEpochSeconds
-            else (System.currentTimeMillis() / 1000L) + 7 * 86400L
-        )
-    }
-    var showDatePicker by remember { mutableStateOf(false) }
-    var accessMode by remember { mutableStateOf(initialAccessMode) }
-
-    val resolvedExpireEpochSec = when (expirePreset) {
-        0 -> 0L
-        -1 -> customExpireEpochSec
-        else -> (System.currentTimeMillis() / 1000L) + expirePreset * 86400L
-    }
-
-    if (showDatePicker) {
-        val datePickerState = rememberDatePickerState(
-            initialSelectedDateMillis = (customExpireEpochSec * 1000L).coerceAtLeast(System.currentTimeMillis() + 86_400_000L)
-        )
-        DatePickerDialog(
-            onDismissRequest = { showDatePicker = false },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        datePickerState.selectedDateMillis?.let { millis ->
-                            // End of selected day
-                            customExpireEpochSec = (millis / 1000L) + 86399L
-                            expirePreset = -1
-                        }
-                        showDatePicker = false
-                    }
-                ) { Text("确定日期") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDatePicker = false }) { Text("取消") }
-            }
-        ) {
-            DatePicker(state = datePickerState)
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = { Icon(Icons.Filled.Link, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-        title = { Text(if (isEditingExisting) "编辑外链分享权限" else "网盘外链分享") },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "${if (isFolder) "文件夹" else "文件"} · $titleName",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                if (createdShare != null) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("外链已就绪", style = MaterialTheme.typography.labelLarge)
-                            Text(
-                                text = createdShare.shareUrl,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = JetBrainsMonoFamily
-                            )
-                            if (createdShare.password.isNotBlank()) {
-                                Text("提取密码：${createdShare.password}", style = MaterialTheme.typography.bodySmall)
-                            }
-                            Text(
-                                text = "有效期：${KodFormatters.formatDateOnly(createdShare.timeTo)} · 权限：${
-                                    when {
-                                        createdShare.canUpload -> "读写协作"
-                                        createdShare.notDownload -> "仅预览"
-                                        else -> "只读（可下载）"
-                                    }
-                                }",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Button(
-                                onClick = {
-                                    val copyPayload = if (createdShare.password.isNotBlank()) {
-                                        "分享链接: ${createdShare.shareUrl}\n提取码: ${createdShare.password}"
-                                    } else {
-                                        createdShare.shareUrl
-                                    }
-                                    onCopyUrl(copyPayload)
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("复制分享链接")
-                            }
-                        }
-                    }
-                } else {
-                    // Password Protection section
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("启用密码保护", style = MaterialTheme.typography.labelLarge)
-                        Switch(
-                            checked = passwordEnabled,
-                            onCheckedChange = { enabled ->
-                                passwordEnabled = enabled
-                                if (enabled && password.isBlank()) {
-                                    password = generateRandomShareCode()
-                                }
-                            },
-                            modifier = Modifier.testTag("share_password_switch")
-                        )
-                    }
-                    if (passwordEnabled) {
-                        OutlinedTextField(
-                            value = password,
-                            onValueChange = { password = it },
-                            label = { Text("提取密码") },
-                            singleLine = true,
-                            trailingIcon = {
-                                IconButton(onClick = { password = generateRandomShareCode() }) {
-                                    Icon(Icons.Filled.Casino, contentDescription = "随机生成密码")
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("share_password_input")
-                        )
-                    }
-
-                    // Expiration Date section (presets + custom date picker)
-                    Text("过期日期", style = MaterialTheme.typography.labelLarge)
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf(0 to "永久有效", 1 to "1 天", 7 to "7 天", 30 to "30 天").forEach { (days, label) ->
-                            FilterChip(
-                                selected = expirePreset == days,
-                                onClick = { expirePreset = days },
-                                label = { Text(label) }
-                            )
-                        }
-                        FilterChip(
-                            selected = expirePreset == -1,
-                            onClick = { showDatePicker = true },
-                            leadingIcon = { Icon(Icons.Filled.CalendarMonth, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                            label = {
-                                Text(
-                                    if (expirePreset == -1) "至 ${KodFormatters.formatDateOnly(customExpireEpochSec)}"
-                                    else "自定义日期"
-                                )
-                            },
-                            modifier = Modifier.testTag("share_custom_date_chip")
-                        )
-                    }
-
-                    // Read-Only vs Read-Write Access Permissions
-                    Text("访问权限（只读 / 读写）", style = MaterialTheme.typography.labelLarge)
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ShareAccessMode.entries.forEach { mode ->
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (accessMode == mode) {
-                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainerLow
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .clickable { accessMode = mode }
-                                    .testTag("share_mode_${mode.name}")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    RadioButton(
-                                        selected = accessMode == mode,
-                                        onClick = { accessMode = mode }
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(mode.label, style = MaterialTheme.typography.titleSmall)
-                                        Text(
-                                            mode.subtitle,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            if (createdShare == null) {
-                Button(
-                    enabled = !isWorking,
-                    onClick = {
-                        val finalPassword = if (passwordEnabled) password.trim() else ""
-                        onSaveShare(finalPassword, resolvedExpireEpochSec, accessMode)
-                    },
-                    modifier = Modifier.testTag("confirm_create_share_button")
-                ) {
-                    if (isWorking) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text(if (isEditingExisting) "保存修改" else "生成外链")
-                    }
-                }
-            } else {
-                TextButton(onClick = onDismiss) { Text("完成") }
-            }
-        },
-        dismissButton = {
-            if (createdShare == null) {
-                TextButton(onClick = onDismiss) { Text("取消") }
-            }
-        }
-    )
-}
-
-private fun generateRandomShareCode(): String {
-    val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-    return (1..4).map { chars.random() }.joinToString("")
-}
-
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SearchFilterBottomSheet(
@@ -546,6 +290,7 @@ fun SearchFilterBottomSheet(
     onReset: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    TrackModalOverlay()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -658,6 +403,7 @@ fun KodTagManagerSheet(
         "label-purple-normal" to 0xFF8B5CF6L
     )
 
+    TrackModalOverlay()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -764,6 +510,7 @@ fun FolderPickerBottomSheet(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    TrackModalOverlay()
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -804,14 +551,14 @@ fun FolderPickerBottomSheet(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilterChip(
-                    selected = state.breadcrumbs.firstOrNull()?.label == "个人空间",
+                    selected = state.breadcrumbs.firstOrNull()?.label == KodSpace.PERSONAL.label,
                     onClick = { onSwitchSpace(false) },
-                    label = { Text("个人空间") }
+                    label = { Text(KodSpace.PERSONAL.label) }
                 )
                 FilterChip(
-                    selected = state.breadcrumbs.firstOrNull()?.label == "企业网盘",
+                    selected = state.breadcrumbs.firstOrNull()?.label == KodSpace.ENTERPRISE.label,
                     onClick = { onSwitchSpace(true) },
-                    label = { Text("企业网盘") }
+                    label = { Text(KodSpace.ENTERPRISE.label) }
                 )
             }
 
@@ -837,13 +584,17 @@ fun FolderPickerBottomSheet(
                     else -> {
                         LazyColumn {
                             items(state.folders, key = { it.path }) { folder ->
+                                val folderVisual = resolveFileVisual(folder)
                                 ListItem(
                                     headlineContent = { Text(folder.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                    supportingContent = if (folder.isDepartmentFolder) {
+                                        { Text("部门文件夹", style = MaterialTheme.typography.labelSmall) }
+                                    } else null,
                                     leadingContent = {
                                         Icon(
-                                            Icons.Filled.Folder,
+                                            imageVector = folderVisual.icon,
                                             contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary
+                                            tint = folderVisual.tint
                                         )
                                     },
                                     modifier = Modifier.clickable { onEnterFolder(folder) }
@@ -889,6 +640,7 @@ fun TextPromptDialog(
     onDismiss: () -> Unit
 ) {
     var value by remember(initialValue) { mutableStateOf(initialValue) }
+    TrackModalOverlay()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
@@ -936,6 +688,7 @@ fun CreateNoteDialog(
     var fileName by remember { mutableStateOf("未命名笔记.md") }
     var content by remember { mutableStateOf("# 新建笔记\n\n") }
 
+    TrackModalOverlay()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("新建文本 / Markdown") },
@@ -977,6 +730,7 @@ fun FileDetailsDialog(
     item: KodFileItem,
     onDismiss: () -> Unit
 ) {
+    TrackModalOverlay()
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Filled.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
@@ -984,7 +738,14 @@ fun FileDetailsDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 DetailRow("名称", item.name)
-                DetailRow("类型", if (item.isFolder) "文件夹" else item.normalizedExt.uppercase().ifBlank { "文件" })
+                DetailRow(
+                    "类型",
+                    when {
+                        item.isFolder && item.isDepartmentFolder -> "部门文件夹"
+                        item.isFolder -> "文件夹"
+                        else -> item.normalizedExt.uppercase().ifBlank { "文件" }
+                    }
+                )
                 if (!item.isFolder) {
                     DetailRow("大小", KodFormatters.formatBytes(item.size))
                 }
@@ -994,6 +755,9 @@ fun FileDetailsDialog(
                 }
                 if (item.ownerName.isNotBlank()) {
                     DetailRow("创建者", item.ownerName)
+                }
+                if (item.displayPath.isNotBlank()) {
+                    DetailRow(if (item.isRecycleItem) "原位置" else "所在位置", item.displayPath)
                 }
                 DetailRow("网盘路径", item.path, mono = true)
                 if (item.hashMd5.isNotBlank()) {
@@ -1032,9 +796,11 @@ fun ConfirmDangerDialog(
     title: String,
     message: String,
     confirmLabel: String,
+    dismissLabel: String = "取消",
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    TrackModalOverlay()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
@@ -1048,7 +814,7 @@ fun ConfirmDangerDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(dismissLabel) }
         }
     )
 }

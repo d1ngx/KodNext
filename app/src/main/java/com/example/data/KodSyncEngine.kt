@@ -14,6 +14,8 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.example.KodApplication
+import com.example.data.local.SyncSnapshotDao
+import com.example.data.local.SyncSnapshotEntity
 import com.example.data.repository.TransferRepository
 import com.example.model.KodAccount
 import com.example.model.SyncDirection
@@ -25,11 +27,11 @@ import com.example.model.TransferType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import kotlin.math.abs
 
 data class SyncOutcome(
     val uploadedCount: Int,
@@ -49,7 +51,9 @@ data class SyncOutcome(
 class KodSyncEngine(
     private val context: Context,
     private val apiClient: KodBoxApiClient,
-    private val transferRepository: TransferRepository? = null
+    private val transferRepository: TransferRepository? = null,
+    private val syncSnapshotDao: SyncSnapshotDao? = null,
+    private val accountStore: KodAccountStore? = null
 ) {
     private val progressScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -57,6 +61,7 @@ class KodSyncEngine(
         var uploaded: Int = 0,
         var downloaded: Int = 0,
         var skipped: Int = 0,
+        var conflicts: Int = 0,
         var failed: Int = 0,
         var firstError: Throwable? = null
     )
@@ -79,14 +84,26 @@ class KodSyncEngine(
                 val treeUri = Uri.parse(rule.localTreeUri)
                 val localDir = DocumentFile.fromTreeUri(context, treeUri)
                     ?: error("无法访问本地同步目录，请重新授权文件夹")
-                if (!localDir.exists() || !localDir.isDirectory) {
+                if (!localDir.exists() || !localDir.isDirectory || !localDir.canRead()) {
                     error("本地同步文件夹已不存在或权限已失效")
                 }
                 if ((rule.direction == SyncDirection.TWO_WAY || rule.direction == SyncDirection.UPLOAD_ONLY) &&
                     !KodBoxApiClient.isWritableKodDirectory(rule.remotePath)
                 ) {
-                    error("网盘目标目录不支持上传，请重新选择个人空间或企业网盘的具体文件夹")
+                    error("网盘目标目录不支持上传，请重新选择个人空间或共享空间的具体文件夹")
                 }
+
+                // Refresh LAN/WAN route quietly before heavy sync batch
+                runCatching { apiClient.probeAccountEndpoint(context, account) }
+
+                val prefs = runCatching { accountStore?.preferencesFlow?.first() }.getOrNull()
+                val preferredChunkMb = prefs?.uploadChunkSizeMb ?: KodUploadResilience.DEFAULT_CHUNK_MB
+                val maxConcurrent = prefs?.maxConcurrentUploads ?: KodUploadResilience.DEFAULT_CONCURRENCY
+
+                val snapshotMap = syncSnapshotDao?.getByRule(rule.id)
+                    ?.associateBy { it.relativePath }
+                    ?.toMutableMap()
+                    ?: mutableMapOf()
 
                 val counters = SyncCounters()
                 syncDirectoryRecursive(
@@ -96,6 +113,9 @@ class KodSyncEngine(
                     remoteDir = rule.remotePath,
                     relativePrefix = "",
                     depth = 0,
+                    snapshots = snapshotMap,
+                    preferredChunkMb = preferredChunkMb,
+                    maxConcurrentUploads = maxConcurrent,
                     counters = counters
                 )
 
@@ -105,6 +125,7 @@ class KodSyncEngine(
 
                 val summary = buildString {
                     append("上传 ${counters.uploaded} · 下载 ${counters.downloaded} · 一致跳过 ${counters.skipped}")
+                    if (counters.conflicts > 0) append(" · 冲突副本 ${counters.conflicts}")
                     if (counters.failed > 0) append(" · 失败 ${counters.failed}")
                 }
                 SyncOutcome(
@@ -127,6 +148,9 @@ class KodSyncEngine(
         remoteDir: String,
         relativePrefix: String,
         depth: Int,
+        snapshots: MutableMap<String, SyncSnapshotEntity>,
+        preferredChunkMb: Int,
+        maxConcurrentUploads: Int,
         counters: SyncCounters
     ) {
         // 1. Fetch remote directory listing
@@ -134,74 +158,121 @@ class KodSyncEngine(
             error("读取网盘目标文件夹失败：${err.message}")
         }
         val remoteFilesByName = remoteListing.items
-            .filterNot { it.isFolder }
+            .filter { !it.isFolder && !SyncConflictResolver.shouldIgnoreEntry(it.name, rule.ignoreHiddenFiles) }
             .associateBy { it.name }
         val remoteFoldersByName = remoteListing.items
-            .filter { it.isFolder && it.name.isNotBlank() }
+            .filter { it.isFolder && !SyncConflictResolver.shouldIgnoreEntry(it.name, rule.ignoreHiddenFiles) }
             .associateBy { it.name }
 
         // 2. Scan local SAF directory files & subfolders
         val localEntries = localDir.listFiles()
         val localFilesByName = localEntries
-            .filter { it.isFile && !it.name.isNullOrBlank() }
+            .filter { it.isFile && !SyncConflictResolver.shouldIgnoreEntry(it.name.orEmpty(), rule.ignoreHiddenFiles) }
             .associateBy { it.name!! }
         val localFoldersByName = localEntries
-            .filter { it.isDirectory && !it.name.isNullOrBlank() }
+            .filter { it.isDirectory && !SyncConflictResolver.shouldIgnoreEntry(it.name.orEmpty(), rule.ignoreHiddenFiles) }
             .associateBy { it.name!! }
 
         val allFileNames = (remoteFilesByName.keys + localFilesByName.keys).sorted()
-        val toleranceMs = 5_000L
 
         for (fileName in allFileNames) {
             val localFile = localFilesByName[fileName]
             val remoteFile = remoteFilesByName[fileName]
             val displayName = if (relativePrefix.isBlank()) fileName else "$relativePrefix$fileName"
 
+            val localMeta = localFile?.let {
+                SyncFileMeta(size = it.length().coerceAtLeast(0L), modifiedMs = it.lastModified())
+            }
+            val remoteModMs = remoteFile?.let { normalizeEpochMs(it.modifyTime) } ?: 0L
+            val remoteMeta = remoteFile?.let {
+                SyncFileMeta(size = it.size.coerceAtLeast(0L), modifiedMs = remoteModMs, hashMd5 = it.hashMd5)
+            }
+            val priorSnapshot = snapshots[displayName]?.let {
+                SyncSnapshotMeta(
+                    localSize = it.localSize,
+                    localModifiedMs = it.localModifiedMs,
+                    remoteSize = it.remoteSize,
+                    remoteModifiedMs = it.remoteModifiedMs,
+                    remoteHashMd5 = it.remoteHashMd5
+                )
+            }
+
+            val action = SyncConflictResolver.decide(
+                direction = rule.direction,
+                conflictPolicy = rule.conflictPolicy,
+                local = localMeta,
+                remote = remoteMeta,
+                snapshot = priorSnapshot
+            )
+
             try {
-                when {
-                    // Only exists locally -> Upload
-                    localFile != null && remoteFile == null -> {
-                        if (rule.direction == SyncDirection.TWO_WAY || rule.direction == SyncDirection.UPLOAD_ONLY) {
-                            uploadLocalDocument(account, remoteDir, localFile, displayName)
+                when (action) {
+                    ThreeWaySyncAction.SKIP -> {
+                        counters.skipped++
+                        if (localMeta != null && remoteMeta != null && priorSnapshot == null) {
+                            recordSnapshot(rule.id, displayName, localMeta, remoteMeta, snapshots)
+                        }
+                    }
+
+                    ThreeWaySyncAction.UPLOAD_LOCAL -> {
+                        if (localFile != null && localMeta != null) {
+                            uploadLocalDocument(
+                                account = account,
+                                remoteDir = remoteDir,
+                                doc = localFile,
+                                displayName = displayName,
+                                preferredChunkMb = preferredChunkMb,
+                                maxConcurrentUploads = maxConcurrentUploads
+                            )
                             counters.uploaded++
+                            val syncedRemote = SyncFileMeta(
+                                size = localMeta.size,
+                                modifiedMs = System.currentTimeMillis(),
+                                hashMd5 = remoteMeta?.hashMd5.orEmpty()
+                            )
+                            recordSnapshot(rule.id, displayName, localMeta, syncedRemote, snapshots)
                         } else {
                             counters.skipped++
                         }
                     }
 
-                    // Only exists remotely -> Download
-                    localFile == null && remoteFile != null -> {
-                        if (rule.direction == SyncDirection.TWO_WAY || rule.direction == SyncDirection.DOWNLOAD_ONLY) {
-                            downloadToLocalDocument(account, remoteFile, localDir, displayName)
+                    ThreeWaySyncAction.DOWNLOAD_REMOTE -> {
+                        if (remoteFile != null && remoteMeta != null) {
+                            val writtenDoc = downloadToLocalDocument(
+                                account = account,
+                                remoteItem = remoteFile,
+                                parentLocalDir = localDir,
+                                displayName = displayName,
+                                overwriteExisting = localFile
+                            )
                             counters.downloaded++
+                            val syncedLocal = SyncFileMeta(
+                                size = writtenDoc.length().coerceAtLeast(remoteMeta.size),
+                                modifiedMs = writtenDoc.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
+                            )
+                            recordSnapshot(rule.id, displayName, syncedLocal, remoteMeta, snapshots)
                         } else {
                             counters.skipped++
                         }
                     }
 
-                    // Exists on both sides -> Compare modification timestamp & size (newer wins)
-                    localFile != null && remoteFile != null -> {
-                        val localModMs = localFile.lastModified()
-                        val remoteModMs = if (remoteFile.modifyTime < 10_000_000_000L) {
-                            remoteFile.modifyTime * 1000L
-                        } else {
-                            remoteFile.modifyTime
-                        }
-                        val sameSize = localFile.length() == remoteFile.size
-                        val withinTolerance = abs(localModMs - remoteModMs) <= toleranceMs
-
-                        if (sameSize && withinTolerance) {
-                            counters.skipped++
-                        } else if (localModMs > remoteModMs + toleranceMs &&
-                            (rule.direction == SyncDirection.TWO_WAY || rule.direction == SyncDirection.UPLOAD_ONLY)
-                        ) {
-                            uploadLocalDocument(account, remoteDir, localFile, displayName)
-                            counters.uploaded++
-                        } else if (remoteModMs > localModMs + toleranceMs &&
-                            (rule.direction == SyncDirection.TWO_WAY || rule.direction == SyncDirection.DOWNLOAD_ONLY)
-                        ) {
-                            downloadToLocalDocument(account, remoteFile, localDir, displayName, overwriteExisting = localFile)
+                    ThreeWaySyncAction.CONFLICT_KEEP_BOTH -> {
+                        // Preserve local file untouched and download remote version as a timestamped conflict copy
+                        if (remoteFile != null && remoteMeta != null && localMeta != null) {
+                            val conflictName = SyncConflictResolver.buildConflictCopyName(remoteFile.name)
+                            val conflictDisplayName = if (relativePrefix.isBlank()) conflictName else "$relativePrefix$conflictName"
+                            downloadToLocalDocument(
+                                account = account,
+                                remoteItem = remoteFile,
+                                parentLocalDir = localDir,
+                                displayName = conflictDisplayName,
+                                overwriteExisting = null,
+                                targetFileNameOverride = conflictName
+                            )
                             counters.downloaded++
+                            counters.conflicts++
+                            // Record snapshot baseline so the same resolved conflict doesn't loop infinitely
+                            recordSnapshot(rule.id, displayName, localMeta, remoteMeta, snapshots)
                         } else {
                             counters.skipped++
                         }
@@ -217,7 +288,7 @@ class KodSyncEngine(
         // 3. Recurse into subdirectories (up to MAX_SYNC_DEPTH) so nested files are never silently missed
         if (depth >= MAX_SYNC_DEPTH) return
         val allFolderNames = (remoteFoldersByName.keys + localFoldersByName.keys)
-            .filterNot { it.startsWith(".") }
+            .filterNot { SyncConflictResolver.shouldIgnoreEntry(it, rule.ignoreHiddenFiles) }
             .sorted()
 
         for (folderName in allFolderNames) {
@@ -234,6 +305,9 @@ class KodSyncEngine(
                         remoteDir = remoteSub.path,
                         relativePrefix = nextPrefix,
                         depth = depth + 1,
+                        snapshots = snapshots,
+                        preferredChunkMb = preferredChunkMb,
+                        maxConcurrentUploads = maxConcurrentUploads,
                         counters = counters
                     )
                 }
@@ -253,6 +327,9 @@ class KodSyncEngine(
                                 remoteDir = refreshedRemoteSub.path,
                                 relativePrefix = nextPrefix,
                                 depth = depth + 1,
+                                snapshots = snapshots,
+                                preferredChunkMb = preferredChunkMb,
+                                maxConcurrentUploads = maxConcurrentUploads,
                                 counters = counters
                             )
                         }
@@ -269,6 +346,9 @@ class KodSyncEngine(
                             remoteDir = remoteSub.path,
                             relativePrefix = nextPrefix,
                             depth = depth + 1,
+                            snapshots = snapshots,
+                            preferredChunkMb = preferredChunkMb,
+                            maxConcurrentUploads = maxConcurrentUploads,
                             counters = counters
                         )
                     }
@@ -277,11 +357,37 @@ class KodSyncEngine(
         }
     }
 
+    private suspend fun recordSnapshot(
+        ruleId: String,
+        relativePath: String,
+        local: SyncFileMeta,
+        remote: SyncFileMeta,
+        cache: MutableMap<String, SyncSnapshotEntity>
+    ) {
+        val entity = SyncSnapshotEntity(
+            ruleId = ruleId,
+            relativePath = relativePath,
+            localSize = local.size,
+            localModifiedMs = local.modifiedMs,
+            remoteSize = remote.size,
+            remoteModifiedMs = remote.modifiedMs,
+            remoteHashMd5 = remote.hashMd5,
+            syncedAtMs = System.currentTimeMillis()
+        )
+        cache[relativePath] = entity
+        runCatching { syncSnapshotDao?.upsert(entity) }
+    }
+
+    private fun normalizeEpochMs(raw: Long): Long =
+        if (raw in 1L..9_999_999_999L) raw * 1000L else raw
+
     private suspend fun uploadLocalDocument(
         account: KodAccount,
         remoteDir: String,
         doc: DocumentFile,
-        displayName: String
+        displayName: String,
+        preferredChunkMb: Int,
+        maxConcurrentUploads: Int
     ) {
         val fileName = doc.name ?: return
         val mime = doc.type ?: KodFormatters.mimeTypeForExtension(fileName.substringAfterLast('.', ""))
@@ -308,6 +414,8 @@ class KodSyncEngine(
             mimeType = mime,
             inputStreamProvider = { resolver.openInputStream(doc.uri) },
             totalBytes = size,
+            preferredChunkSizeMb = preferredChunkMb,
+            maxConcurrentUploads = maxConcurrentUploads,
             onProgress = { transferred, total ->
                 lastTransferredBytes = transferred
                 if (taskId != null && transferRepository != null) {
@@ -365,8 +473,10 @@ class KodSyncEngine(
         remoteItem: com.example.model.KodFileItem,
         parentLocalDir: DocumentFile,
         displayName: String,
-        overwriteExisting: DocumentFile? = null
-    ) {
+        overwriteExisting: DocumentFile? = null,
+        targetFileNameOverride: String? = null
+    ): DocumentFile {
+        val targetName = targetFileNameOverride?.takeIf { it.isNotBlank() } ?: remoteItem.name
         val mime = KodFormatters.mimeTypeForExtension(remoteItem.normalizedExt)
         val taskId = transferRepository?.recordDirectTransferStart(
             accountId = account.id,
@@ -383,8 +493,8 @@ class KodSyncEngine(
 
         try {
             val targetDoc = overwriteExisting
-                ?: parentLocalDir.createFile(mime, remoteItem.name)
-                ?: error("无法在本地目录创建文件 ${remoteItem.name}")
+                ?: parentLocalDir.createFile(mime, targetName)
+                ?: error("无法在本地目录创建文件 $targetName")
             val resolver = context.contentResolver
             val downloadedBytes = apiClient.downloadFileToStream(
                 account = account,
@@ -420,6 +530,7 @@ class KodSyncEngine(
                     errorMessage = ""
                 )
             }
+            return targetDoc
         } catch (err: Throwable) {
             if (taskId != null && transferRepository != null && !transferRepository.isTaskCancelled(taskId)) {
                 val resolvedTotal = remoteItem.size.coerceAtLeast(lastTransferredBytes)

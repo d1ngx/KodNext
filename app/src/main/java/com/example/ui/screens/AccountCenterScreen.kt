@@ -75,6 +75,7 @@ import coil.ImageLoader
 import com.example.data.KodFormatters
 import com.example.ui.components.ConfirmDangerDialog
 import com.example.ui.components.KodUserAvatar
+import com.example.ui.components.TrackModalOverlay
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.viewmodel.KodUiState
 
@@ -379,6 +380,7 @@ fun AccountCenterScreen(
 
     // Dedicated ModalBottomSheet for Login Devices & Activity Logs (keeps main Account Center crisp!)
     if (showActivitySheet) {
+        TrackModalOverlay()
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(
             onDismissRequest = { showActivitySheet = false },
@@ -542,6 +544,7 @@ fun AccountCenterScreen(
         var phone by remember(account.id, account.phone) { mutableStateOf(account.phone) }
         var sex by remember(account.id, account.sex) { mutableStateOf(account.sex.ifBlank { "1" }) }
 
+        TrackModalOverlay()
         AlertDialog(
             onDismissRequest = { showEditProfileDialog = false },
             title = { Text("编辑个人资料") },
@@ -626,6 +629,7 @@ fun AccountCenterScreen(
         var confirmPwd by remember { mutableStateOf("") }
         var localErr by remember { mutableStateOf<String?>(null) }
 
+        TrackModalOverlay()
         AlertDialog(
             onDismissRequest = { showPasswordDialog = false },
             title = { Text("修改登录密码") },

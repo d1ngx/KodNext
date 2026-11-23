@@ -83,6 +83,19 @@ class AuthRepository(
         return result
     }
 
+    suspend fun loginWithWebViewSession(
+        serverUrl: String,
+        cookieHeader: String,
+        tokenCandidate: String = ""
+    ): Result<KodAccount> {
+        val result = apiClient.loginWithWebViewSession(serverUrl, cookieHeader, tokenCandidate)
+        result.onSuccess { account ->
+            accountStore.saveOrUpdateAccount(account, makeActive = true)
+            apiClient.hydrateAccountSession(account)
+        }
+        return result
+    }
+
     suspend fun confirmWebQrLogin(account: KodAccount, qrUrl: String): Result<String> =
         apiClient.confirmWebQrLogin(account, qrUrl)
 
@@ -104,8 +117,29 @@ class AuthRepository(
 
     suspend fun refreshAccountInfo(account: KodAccount): Result<KodAccount> {
         return apiClient.refreshAccountInfo(account).onSuccess { refreshed ->
-            accountStore.saveOrUpdateAccount(refreshed, makeActive = false)
+            accountStore.saveOrUpdateAccount(
+                refreshed.copy(
+                    lanServerUrl = account.lanServerUrl,
+                    preferLan = account.preferLan
+                ),
+                makeActive = false
+            )
         }
+    }
+
+    suspend fun updateAccountLanEndpoint(
+        account: KodAccount,
+        lanServerUrl: String,
+        preferLan: Boolean
+    ): KodAccount {
+        val normalizedLan = com.example.data.KodEndpointResolver.normalizeOptionalLanUrl(lanServerUrl)
+        val updated = account.copy(lanServerUrl = normalizedLan, preferLan = preferLan)
+        accountStore.saveOrUpdateAccount(updated, makeActive = false)
+        return updated
+    }
+
+    suspend fun probeAccountEndpoint(context: android.content.Context?, account: KodAccount): com.example.data.AccountEndpointStatus {
+        return apiClient.probeAccountEndpoint(context, account)
     }
 
     suspend fun fetchServerPluginsDiscovery(account: KodAccount) =

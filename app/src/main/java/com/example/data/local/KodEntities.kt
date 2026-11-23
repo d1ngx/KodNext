@@ -7,6 +7,7 @@ import com.example.model.BreadcrumbNode
 import com.example.model.KodFileItem
 import com.example.model.KodTag
 import com.example.model.PathListResult
+import com.example.model.SyncConflictPolicy
 import com.example.model.SyncDirection
 import com.example.model.SyncFrequency
 import com.example.model.SyncRule
@@ -35,7 +36,9 @@ data class SyncRuleEntity(
     val enabled: Boolean,
     val lastSyncTime: Long,
     val lastStatus: String,
-    val lastSummary: String
+    val lastSummary: String,
+    val conflictPolicy: String = SyncConflictPolicy.KEEP_BOTH_CONFLICT_COPY.name,
+    val ignoreHiddenFiles: Boolean = true
 ) {
     fun toModel(): SyncRule = SyncRule(
         id = id,
@@ -51,7 +54,10 @@ data class SyncRuleEntity(
         enabled = enabled,
         lastSyncTime = lastSyncTime,
         lastStatus = runCatching { SyncRunStatus.valueOf(lastStatus) }.getOrDefault(SyncRunStatus.IDLE),
-        lastSummary = lastSummary
+        lastSummary = lastSummary,
+        conflictPolicy = runCatching { SyncConflictPolicy.valueOf(conflictPolicy) }
+            .getOrDefault(SyncConflictPolicy.KEEP_BOTH_CONFLICT_COPY),
+        ignoreHiddenFiles = ignoreHiddenFiles
     )
 
     companion object {
@@ -69,10 +75,28 @@ data class SyncRuleEntity(
             enabled = rule.enabled,
             lastSyncTime = rule.lastSyncTime,
             lastStatus = rule.lastStatus.name,
-            lastSummary = rule.lastSummary
+            lastSummary = rule.lastSummary,
+            conflictPolicy = rule.conflictPolicy.name,
+            ignoreHiddenFiles = rule.ignoreHiddenFiles
         )
     }
 }
+
+@Entity(
+    tableName = "sync_snapshots",
+    primaryKeys = ["ruleId", "relativePath"],
+    indices = [Index(value = ["ruleId"])]
+)
+data class SyncSnapshotEntity(
+    val ruleId: String,
+    val relativePath: String,
+    val localSize: Long,
+    val localModifiedMs: Long,
+    val remoteSize: Long,
+    val remoteModifiedMs: Long,
+    val remoteHashMd5: String,
+    val syncedAtMs: Long
+)
 
 @Entity(
     tableName = "transfer_tasks",
@@ -96,7 +120,9 @@ data class TransferTaskEntity(
     val totalBytes: Long,
     val status: String,
     val errorMessage: String,
-    val timestamp: Long
+    val timestamp: Long,
+    val completedChunks: Int = 0,
+    val chunkSizeBytes: Long = 0L
 ) {
     fun toModel(): TransferTask = TransferTask(
         id = id,
@@ -116,7 +142,12 @@ data class TransferTaskEntity(
     )
 
     companion object {
-        fun fromModel(task: TransferTask, workRequestId: String = ""): TransferTaskEntity = TransferTaskEntity(
+        fun fromModel(
+            task: TransferTask,
+            workRequestId: String = "",
+            completedChunks: Int = 0,
+            chunkSizeBytes: Long = 0L
+        ): TransferTaskEntity = TransferTaskEntity(
             id = task.id,
             accountId = task.accountId,
             fileName = task.fileName,
@@ -131,7 +162,9 @@ data class TransferTaskEntity(
             totalBytes = task.totalBytes,
             status = task.status.name,
             errorMessage = task.errorMessage,
-            timestamp = task.timestamp
+            timestamp = task.timestamp,
+            completedChunks = completedChunks,
+            chunkSizeBytes = chunkSizeBytes
         )
     }
 }
@@ -213,6 +246,9 @@ internal object DirectoryCacheCodec {
                     put("isWriteable", item.isWriteable)
                     put("isRecycleItem", item.isRecycleItem)
                     put("childCount", item.childCount)
+                    put("displayPath", item.displayPath)
+                    put("isSpecialDirectory", item.isSpecialDirectory)
+                    put("isDepartmentFolder", item.isDepartmentFolder)
                 }
             )
         }
@@ -278,7 +314,10 @@ internal object DirectoryCacheCodec {
                         isReadable = obj.optBoolean("isReadable", true),
                         isWriteable = obj.optBoolean("isWriteable", true),
                         isRecycleItem = obj.optBoolean("isRecycleItem", false),
-                        childCount = obj.optInt("childCount", 0)
+                        childCount = obj.optInt("childCount", 0),
+                        displayPath = obj.optString("displayPath"),
+                        isSpecialDirectory = obj.optBoolean("isSpecialDirectory", false),
+                        isDepartmentFolder = obj.optBoolean("isDepartmentFolder", false)
                     )
                 )
             }

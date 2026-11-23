@@ -99,6 +99,7 @@ fun FilesTabContent(
     onClearAllFilters: () -> Unit,
     onItemClick: (KodFileItem) -> Unit,
     onItemLongClick: (KodFileItem) -> Unit,
+    onItemShareClick: (KodFileItem) -> Unit,
     onItemMoreClick: (KodFileItem) -> Unit,
     onEmptyRecycleBin: () -> Unit,
     onCreateFolderPrompt: () -> Unit,
@@ -469,6 +470,20 @@ fun FilesTabContent(
                 state.preferences.viewMode == ViewMode.LIST -> {
                     val readmeItem = state.directoryReadmeItem
                     val showInlineReadme = readmeItem != null && !state.isSearchActive && !state.searchFilter.hasActiveFilters
+                    val sharedKeys = remember(state.shares, state.collabShares) {
+                        buildSet {
+                            (state.shares + state.collabShares).forEach { s ->
+                                if (s.sourceId.isNotBlank()) add("id:${s.sourceId}")
+                                val p = s.path.trim().trimEnd('/')
+                                if (p.isNotBlank()) add("path:$p")
+                            }
+                        }
+                    }
+                    val isTopLevelSpecialSpace = state.breadcrumbs.size <= 1 && (
+                        state.activeSpace == KodSpace.ENTERPRISE ||
+                            state.activeSpace == KodSpace.FILE_TYPES ||
+                            state.activeSpace == KodSpace.TAGS
+                        )
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(bottom = 96.dp)
@@ -485,16 +500,27 @@ fun FilesTabContent(
                                 )
                             }
                         }
-                        items(state.files, key = { it.path }) { item ->
+                        val isRecycleSpace = state.activeSpace == KodSpace.RECYCLE_BIN
+                        items(state.files, key = { it.path }) { rawItem ->
+                            val isRecycleEntry = isRecycleSpace || rawItem.isRecycleItem
+                            val isKnownShared = rawItem.isShare ||
+                                (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in sharedKeys) ||
+                                ("path:${rawItem.path.trim().trimEnd('/')}" in sharedKeys)
+                            val item = if (isKnownShared && !rawItem.isShare) rawItem.copy(isShare = true) else rawItem
+                            val allowShareButton = !isRecycleEntry && !isTopLevelSpecialSpace && item.canShare
                             NextcloudFileListItem(
                                 item = item,
-                                thumbnailUrl = if (item.isImage) thumbnailUrlFor(item) else null,
+                                thumbnailUrl = if (item.supportsThumbnail) thumbnailUrlFor(item) else null,
                                 imageLoader = imageLoader,
                                 showThumbnails = state.preferences.showThumbnails,
                                 isSelected = item.path in state.selectedPaths,
                                 isSelectionMode = state.isInSelectionMode,
                                 onClick = { onItemClick(item) },
                                 onLongClick = { onItemLongClick(item) },
+                                onShareClick = if (allowShareButton) {
+                                    { onItemShareClick(item) }
+                                } else null,
+                                showLocationPath = isRecycleEntry,
                                 onMoreClick = { onItemMoreClick(item) }
                             )
                             HorizontalDivider(
@@ -507,6 +533,20 @@ fun FilesTabContent(
                 else -> {
                     val readmeItem = state.directoryReadmeItem
                     val showInlineReadme = readmeItem != null && !state.isSearchActive && !state.searchFilter.hasActiveFilters
+                    val sharedKeys = remember(state.shares, state.collabShares) {
+                        buildSet {
+                            (state.shares + state.collabShares).forEach { s ->
+                                if (s.sourceId.isNotBlank()) add("id:${s.sourceId}")
+                                val p = s.path.trim().trimEnd('/')
+                                if (p.isNotBlank()) add("path:$p")
+                            }
+                        }
+                    }
+                    val isTopLevelSpecialSpace = state.breadcrumbs.size <= 1 && (
+                        state.activeSpace == KodSpace.ENTERPRISE ||
+                            state.activeSpace == KodSpace.FILE_TYPES ||
+                            state.activeSpace == KodSpace.TAGS
+                        )
                     LazyVerticalGrid(
                         columns = GridCells.Adaptive(minSize = 152.dp),
                         contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 96.dp),
@@ -530,15 +570,26 @@ fun FilesTabContent(
                                 )
                             }
                         }
-                        items(state.files, key = { it.path }) { item ->
+                        val isRecycleSpace = state.activeSpace == KodSpace.RECYCLE_BIN
+                        items(state.files, key = { it.path }) { rawItem ->
+                            val isRecycleEntry = isRecycleSpace || rawItem.isRecycleItem
+                            val isKnownShared = rawItem.isShare ||
+                                (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in sharedKeys) ||
+                                ("path:${rawItem.path.trim().trimEnd('/')}" in sharedKeys)
+                            val item = if (isKnownShared && !rawItem.isShare) rawItem.copy(isShare = true) else rawItem
+                            val allowShareButton = !isRecycleEntry && !isTopLevelSpecialSpace && item.canShare
                             NextcloudFileGridCard(
                                 item = item,
-                                thumbnailUrl = if (item.isImage) thumbnailUrlFor(item) else null,
+                                thumbnailUrl = if (item.supportsThumbnail) thumbnailUrlFor(item) else null,
                                 imageLoader = imageLoader,
                                 showThumbnails = state.preferences.showThumbnails,
                                 isSelected = item.path in state.selectedPaths,
                                 onClick = { onItemClick(item) },
                                 onLongClick = { onItemLongClick(item) },
+                                onShareClick = if (allowShareButton) {
+                                    { onItemShareClick(item) }
+                                } else null,
+                                showLocationPath = isRecycleEntry,
                                 onMoreClick = { onItemMoreClick(item) }
                             )
                         }

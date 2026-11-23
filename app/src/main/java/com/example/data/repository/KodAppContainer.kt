@@ -3,6 +3,7 @@ package com.example.data.repository
 import android.content.Context
 import com.example.data.KodAccountStore
 import com.example.data.KodAdminAndAccountClient
+import com.example.data.KodAppUpdateChecker
 import com.example.data.KodBoxApiClient
 import com.example.data.KodDirectoryCache
 import com.example.data.KodSyncEngine
@@ -19,12 +20,21 @@ class KodAppContainer(context: Context) {
     private val appContext = context.applicationContext
 
     val apiClient: KodBoxApiClient by lazy { KodBoxApiClient() }
+    val updateChecker: KodAppUpdateChecker by lazy { KodAppUpdateChecker(apiClient.okHttpClient) }
     val adminAccountClient: KodAdminAndAccountClient by lazy { KodAdminAndAccountClient(apiClient) }
     val credentialVault: KodCredentialVault by lazy { KodCredentialVault(appContext) }
     val accountStore: KodAccountStore by lazy { KodAccountStore(appContext, credentialVault) }
     val database: KodDatabase by lazy { KodDatabase.build(appContext) }
     val directoryCache: KodDirectoryCache by lazy { KodDirectoryCache() }
-    val syncEngine: KodSyncEngine by lazy { KodSyncEngine(appContext, apiClient, transferRepository) }
+    val syncEngine: KodSyncEngine by lazy {
+        KodSyncEngine(
+            context = appContext,
+            apiClient = apiClient,
+            transferRepository = transferRepository,
+            syncSnapshotDao = database.syncSnapshotDao(),
+            accountStore = accountStore
+        )
+    }
 
     val authRepository: AuthRepository by lazy {
         AuthRepository(
@@ -47,7 +57,8 @@ class KodAppContainer(context: Context) {
             context = appContext,
             syncRuleDao = database.syncRuleDao(),
             accountStore = accountStore,
-            syncEngine = syncEngine
+            syncEngine = syncEngine,
+            syncSnapshotDao = database.syncSnapshotDao()
         )
     }
 

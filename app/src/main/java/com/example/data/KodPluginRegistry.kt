@@ -237,7 +237,13 @@ object KodPluginRegistry {
 
         val excludedWorkspaceIds = setOf(
             "debug", "filemissingexport", "msgwarning", "oemextshare", "picasa",
-            "photoswipe", "dplayer", "jplayer", "filethumb", "aceeditor", "htmleditor"
+            "photoswipe", "dplayer", "jplayer", "filethumb", "aceeditor", "htmleditor",
+            // Standalone server-admin / database / terminal plugins that rely on isolated PHP
+            // cookie sessions or desktop-only shells and render blank or loop in mobile WebView:
+            "adminer", "webconsole", "console", "webssh", "terminal", "phpmyadmin", "mcp",
+            // Auth / SSO / file-viewer-only plugins that should not appear as standalone App Hub cards:
+            "oauth", "oauth2", "oidc", "sso", "cas", "dingtalk", "wework", "wxwork", "feishu", "lark",
+            "onlyoffice", "yzoffice", "officelive", "pdfjs", "webodf", "epubreader", "autoviewer", "emlviewer"
         )
 
         val friendlyMeta = mapOf(
@@ -249,19 +255,17 @@ object KodPluginRegistry {
             "excalidraw" to Triple("白板绘图", "Excalidraw 手绘协作白板", 660),
             "photopea" to Triple("在线 PS", "Photopea 专业图像设计", 600),
             "svgeditor" to Triple("SVG 编辑器", "矢量图形在线编辑", 580),
-            "helpcenter" to Triple("帮助中心", "使用手册与知识文档", 500),
-            "webconsole" to Triple("Web 终端", "服务器在线命令行终端", 420),
-            "adminer" to Triple("数据库管理", "Adminer 数据库管理工具", 400),
-            "mcp" to Triple("MCP 配置", "模型上下文协议管理", 380)
+            "helpcenter" to Triple("帮助中心", "使用手册与知识文档", 500)
         )
-        val adminOnlyIds = setOf("webconsole", "adminer", "mcp")
+        val adminOnlyIds = emptySet<String>()
 
         val titleRegex = Regex("""(?:menuName|appName|title|name)\s*[:=]\s*['"]([^'"]{1,32})['"]""")
         val descRegex = Regex("""(?:appDesc|docsDesc|desc)\s*[:=]\s*['"]([^'"]{2,120})['"]""")
-        val iconRegex = Regex("""(?:iconFile|icon)\s*[:=]\s*['"](https?://[^'"]+\.(?:png|svg|jpg|webp))['"]""")
-        val appUrlRegex = Regex("""(?:appUrl|pluginApi|url)\s*[:=]\s*['"](https?://[^'"]+)['"]""")
+        val iconRegex = Regex("""(?:iconFile|icon)\s*[:=]\s*['"]([^'"]+\.(?:png|jpg|jpeg|webp|svg)(?:\?[^'"]*)?)['"]""", RegexOption.IGNORE_CASE)
+        val appUrlRegex = Regex("""(?:appUrl|pluginApi|url)\s*[:=]\s*['"]([^'"]+)['"]""")
         val routerPageRegex = Regex("""Router\.mapPage\s*\(\s*\{[^}]*page\s*:\s*['"]([^'"]+)['"]""")
-        val routerIframeRegex = Regex("""Router\.mapIframe\s*\(\s*\{[^}]*url\s*:\s*['"](https?://[^'"]+)['"]""")
+        val routerIframeRegex = Regex("""Router\.mapIframe\s*\(\s*\{[^}]*url\s*:\s*['"]([^'"]+)['"]""")
+        val serverHost = extractHostLower(base)
 
         for (i in matches.indices) {
             val pluginName = matches[i].groupValues[1].trim()
@@ -279,12 +283,18 @@ object KodPluginRegistry {
             if (!hasMenu && !hasRouterPage && !hasRouterIframe && !hasLightApp) continue
 
             val routerPageId = routerPageRegex.find(block)?.groupValues?.get(1)?.trim().orEmpty()
-            val iframeUrl = routerIframeRegex.find(block)?.groupValues?.get(1)?.trim().orEmpty()
-            val directAppUrl = appUrlRegex.find(block)?.groupValues?.get(1)?.trim().orEmpty()
+            val iframeUrl = routerIframeRegex.findAll(block)
+                .map { resolvePluginLaunchUrl(it.groupValues[1], base, serverHost) }
+                .firstOrNull { it.isNotBlank() }
+                .orEmpty()
+            val directAppUrl = appUrlRegex.findAll(block)
+                .map { resolvePluginLaunchUrl(it.groupValues[1], base, serverHost) }
+                .firstOrNull { it.isNotBlank() }
+                .orEmpty()
 
             val (launchUrl, isRouterPage) = when {
                 iframeUrl.isNotBlank() -> iframeUrl to false
-                directAppUrl.isNotBlank() && !directAppUrl.contains("static/images/") -> directAppUrl to false
+                directAppUrl.isNotBlank() -> directAppUrl to false
                 routerPageId.isNotBlank() -> "$base/#$routerPageId" to true
                 hasRouterPage || lower == "project" || lower == "aidoc" -> "$base/#$pluginName" to true
                 else -> "$base/?plugin/$pluginName/" to false
@@ -294,7 +304,10 @@ object KodPluginRegistry {
             val parsedTitle = titleRegex.find(block)?.groupValues?.get(1)?.trim().orEmpty()
             val title = meta?.first ?: parsedTitle.ifBlank { pluginName }
             val desc = meta?.second ?: descRegex.find(block)?.groupValues?.get(1)?.trim().orEmpty()
-            val iconUrl = iconRegex.find(block)?.groupValues?.get(1)?.trim().orEmpty()
+            val iconUrl = iconRegex.findAll(block)
+                .map { resolveRasterIconUrl(it.groupValues[1], base) }
+                .firstOrNull { it.isNotBlank() }
+                .orEmpty()
             val priority = meta?.third ?: if (hasMenu) 550 else 300
 
             discovered[lower] = KodWorkspaceApp(
@@ -310,6 +323,64 @@ object KodPluginRegistry {
         }
 
         return discovered.values.sortedByDescending { it.priority }
+    }
+
+    private fun extractHostLower(url: String): String {
+        return runCatching { java.net.URI(url).host?.lowercase().orEmpty() }.getOrDefault("")
+    }
+
+    private fun resolvePluginLaunchUrl(raw: String, base: String, serverHost: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank() || trimmed.contains("{{") || trimmed.contains("}}")) return ""
+        val lower = trimmed.lowercase()
+        if (lower.contains("static/images/") ||
+            lower.endsWith(".png") ||
+            lower.endsWith(".svg") ||
+            lower.endsWith(".jpg") ||
+            lower.endsWith(".jpeg") ||
+            lower.endsWith(".webp") ||
+            lower.endsWith(".css") ||
+            lower.endsWith(".js")
+        ) {
+            return ""
+        }
+        val resolved = when {
+            lower.startsWith("http://") || lower.startsWith("https://") -> trimmed
+            trimmed.startsWith("//") -> {
+                val scheme = if (base.startsWith("http://", ignoreCase = true)) "http:" else "https:"
+                "$scheme$trimmed"
+            }
+            trimmed.startsWith("/") -> "$base$trimmed"
+            trimmed.startsWith("./") -> "$base/${trimmed.removePrefix("./")}"
+            trimmed.startsWith("?") || trimmed.startsWith("index.php?") -> "$base/$trimmed"
+            else -> return ""
+        }
+        // Only accept URLs targeting the user's own KodBox server so external project/docs links
+        // (e.g. https://www.adminer.org/) inside plugin metadata never hijack launchUrl.
+        if (serverHost.isNotBlank()) {
+            val resolvedHost = extractHostLower(resolved)
+            if (resolvedHost.isNotBlank() && resolvedHost != serverHost) return ""
+        }
+        return resolved
+    }
+
+    private fun resolveRasterIconUrl(raw: String, base: String): String {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank() || trimmed.contains("{{") || trimmed.contains("}}")) return ""
+        val pathOnly = trimmed.substringBefore('?').substringBefore('#').lowercase()
+        // Coil without coil-svg cannot decode SVG XML; skip .svg so clean vector icons render instead of blank boxes.
+        if (pathOnly.endsWith(".svg")) return ""
+        return when {
+            trimmed.startsWith("http://", ignoreCase = true) ||
+                trimmed.startsWith("https://", ignoreCase = true) -> trimmed
+            trimmed.startsWith("//") -> {
+                val scheme = if (base.startsWith("http://", ignoreCase = true)) "http:" else "https:"
+                "$scheme$trimmed"
+            }
+            trimmed.startsWith("/") -> "$base$trimmed"
+            trimmed.startsWith("./") -> "$base/${trimmed.removePrefix("./")}"
+            else -> ""
+        }
     }
 
     private fun normalizePluginRoute(rawOpenUrl: String, pluginName: String): String? {

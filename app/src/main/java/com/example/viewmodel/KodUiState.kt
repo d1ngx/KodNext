@@ -1,11 +1,16 @@
 package com.example.viewmodel
 
+import com.example.data.AppUpdateInfo
 import com.example.model.AppPreferences
 import com.example.model.BreadcrumbNode
 import com.example.model.KodAccount
 import com.example.model.KodAdminOverview
+import com.example.model.KodCollabAuthRole
+import com.example.model.KodCollabTarget
+import com.example.model.KodExistingShareDetail
 import com.example.model.KodFileItem
 import com.example.model.KodFileTypeCategory
+import com.example.model.KodOAuthProvider
 import com.example.model.KodPluginApp
 import com.example.model.KodShareItem
 import com.example.model.KodSpace
@@ -16,6 +21,7 @@ import com.example.model.KodWorkspaceApp
 import com.example.model.MainTab
 import com.example.model.SearchFilterState
 import com.example.model.ServerProbeInfo
+import com.example.model.ShareDialogTab
 import com.example.model.ShareSubTab
 import com.example.model.SyncRule
 import com.example.model.SyncSubTab
@@ -26,12 +32,20 @@ sealed interface KodUiEvent {
     data class ShowMessage(val message: String, val isError: Boolean = false) : KodUiEvent
     data class CopyToClipboard(val label: String, val text: String) : KodUiEvent
     data class OpenLocalFile(val file: File, val mimeType: String) : KodUiEvent
+    data class ShareLocalFile(val file: File, val mimeType: String) : KodUiEvent
+    data class DownloadCompleted(val task: TransferTask) : KodUiEvent
+    data class OpenExternalUrl(val url: String) : KodUiEvent
 }
 
 enum class LoginStep {
     SERVER_URL,
     CREDENTIALS
 }
+
+data class OAuthLoginSession(
+    val serverUrl: String,
+    val provider: KodOAuthProvider
+)
 
 data class LoginFormState(
     val step: LoginStep = LoginStep.SERVER_URL,
@@ -40,6 +54,7 @@ data class LoginFormState(
     val password: String = "",
     val checkCode: String = "",
     val isProbing: Boolean = false,
+    val isCheckingOAuth: Boolean = false,
     val isLoggingIn: Boolean = false,
     val probeInfo: ServerProbeInfo? = null,
     val captchaBytes: ByteArray? = null,
@@ -88,6 +103,7 @@ data class KodUiState(
     val activeAccount: KodAccount? = null,
     val showAddAccountLogin: Boolean = false,
     val showQrScanner: Boolean = false,
+    val activeOAuthSession: OAuthLoginSession? = null,
     val preferences: AppPreferences = AppPreferences(),
     val loginForm: LoginFormState = LoginFormState(),
     val serverPlugins: List<KodPluginApp> = emptyList(),
@@ -170,13 +186,26 @@ data class KodUiState(
     val actionSheetItem: KodFileItem? = null,
     val detailDialogItem: KodFileItem? = null,
     val shareDialogItem: KodFileItem? = null,
+    val shareDialogInitialTab: ShareDialogTab = ShareDialogTab.EXTERNAL_LINK,
+    val shareExistingDetail: KodExistingShareDetail? = null,
+    val isLoadingShareDetail: Boolean = false,
+    val collabAuthRoles: List<KodCollabAuthRole> = KodCollabAuthRole.DEFAULT_ROLES,
+    val collabTargetCandidates: List<KodCollabTarget> = emptyList(),
+    val isSearchingCollabTargets: Boolean = false,
+    val collabSearchError: String? = null,
     val createdShareResult: KodShareItem? = null,
     val tagSheetItem: KodFileItem? = null,
     val renameDialogItem: KodFileItem? = null,
     val folderPickerState: FolderPickerState? = null,
     val isWorking: Boolean = false,
     val serverHealthMessage: String? = null,
-    val sessionExpiredNotice: SessionExpiredNotice? = null
+    val activeEndpointStatus: com.example.data.AccountEndpointStatus? = null,
+    val isProbingEndpoint: Boolean = false,
+    val sessionExpiredNotice: SessionExpiredNotice? = null,
+    val availableUpdate: AppUpdateInfo? = null,
+    val isCheckingUpdate: Boolean = false,
+    val updateStatusMessage: String? = null,
+    val updateDialogDismissed: Boolean = false
 ) {
     val isInSelectionMode: Boolean
         get() = selectedPaths.isNotEmpty()

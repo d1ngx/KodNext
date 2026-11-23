@@ -50,6 +50,7 @@ fun AccountSwitcherDialog(
     onSwitchAccount: (KodAccount) -> Unit,
     onAddAccount: () -> Unit
 ) {
+    TrackModalOverlay()
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = RoundedCornerShape(26.dp),

@@ -32,6 +32,22 @@ interface SyncRuleDao {
 }
 
 @Dao
+interface SyncSnapshotDao {
+
+    @Query("SELECT * FROM sync_snapshots WHERE ruleId = :ruleId")
+    suspend fun getByRule(ruleId: String): List<SyncSnapshotEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: SyncSnapshotEntity)
+
+    @Query("DELETE FROM sync_snapshots WHERE ruleId = :ruleId")
+    suspend fun deleteByRule(ruleId: String)
+
+    @Query("DELETE FROM sync_snapshots WHERE ruleId = :ruleId AND relativePath = :relativePath")
+    suspend fun deleteEntry(ruleId: String, relativePath: String)
+}
+
+@Dao
 interface TransferTaskDao {
 
     @Query("SELECT * FROM transfer_tasks WHERE accountId = :accountId ORDER BY timestamp DESC")
@@ -86,6 +102,9 @@ interface TransferTaskDao {
 
     @Query("UPDATE transfer_tasks SET workRequestId = :workRequestId, status = 'RUNNING', errorMessage = '' WHERE id = :id")
     suspend fun markRestarted(id: String, workRequestId: String)
+
+    @Query("UPDATE transfer_tasks SET completedChunks = :completedChunks, chunkSizeBytes = :chunkSizeBytes WHERE id = :id")
+    suspend fun updateChunkCheckpoint(id: String, completedChunks: Int, chunkSizeBytes: Long)
 
     @Query("UPDATE transfer_tasks SET status = 'CANCELLED', errorMessage = '' WHERE id = :id")
     suspend fun markCancelled(id: String)

@@ -167,6 +167,10 @@ class TransferRepository(
         transferTaskDao.updateProgress(taskId, progress, bytesTransferred, totalBytes)
     }
 
+    suspend fun updateChunkCheckpoint(taskId: String, completedChunks: Int, chunkSizeBytes: Long) {
+        transferTaskDao.updateChunkCheckpoint(taskId, completedChunks, chunkSizeBytes)
+    }
+
     suspend fun markTerminalState(
         taskId: String,
         status: TransferStatus,

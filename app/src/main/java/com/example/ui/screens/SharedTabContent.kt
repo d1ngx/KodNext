@@ -65,6 +65,7 @@ fun SharedTabContent(
     onRefresh: () -> Unit,
     onCopyShare: (KodShareItem) -> Unit,
     onEditShare: (KodShareItem) -> Unit,
+    onEditCollabShare: (KodShareItem) -> Unit = {},
     onCancelShare: (KodShareItem) -> Unit,
     onOpenSharedResource: (path: String, title: String, isFolder: Boolean, ext: String, size: Long) -> Unit,
     modifier: Modifier = Modifier
@@ -183,6 +184,9 @@ fun SharedTabContent(
                                                 onOpenSharedResource(share.path, share.title, share.isFolder, share.ext, share.size)
                                             }
                                         },
+                                        onEdit = if (share.path.isNotBlank()) {
+                                            { onEditCollabShare(share) }
+                                        } else null,
                                         onCancel = if (share.shareId.isNotBlank()) {
                                             { pendingCancelShare = share }
                                         } else null
@@ -407,6 +411,7 @@ private fun CompactExternalShareRow(
 private fun CompactCollabShareRow(
     share: KodShareItem,
     onOpen: () -> Unit,
+    onEdit: (() -> Unit)? = null,
     onCancel: (() -> Unit)?
 ) {
     val visual = resolveFileVisual(
@@ -490,25 +495,40 @@ private fun CompactCollabShareRow(
                 )
             }
 
-            if (onCancel != null) {
-                IconButton(
-                    onClick = onCancel,
-                    modifier = Modifier.size(38.dp)
-                ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (onEdit != null) {
+                    IconButton(
+                        onClick = onEdit,
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Edit,
+                            contentDescription = "编辑内部协作",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                if (onCancel != null) {
+                    IconButton(
+                        onClick = onCancel,
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.LinkOff,
+                            contentDescription = "取消协作",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                } else if (onEdit == null) {
                     Icon(
-                        imageVector = Icons.Filled.LinkOff,
-                        contentDescription = "取消协作",
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(18.dp)
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(end = 4.dp)
                     )
                 }
-            } else {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(end = 4.dp)
-                )
             }
         }
     }

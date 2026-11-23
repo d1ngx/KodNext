@@ -5,8 +5,10 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -21,7 +23,12 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-private val Context.kodSecretDataStore: DataStore<Preferences> by preferencesDataStore(name = "kodnext_secrets")
+private val Context.kodSecretDataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "kodnext_secrets",
+    corruptionHandler = ReplaceFileCorruptionHandler(
+        produceNewData = { emptyPreferences() }
+    )
+)
 
 data class AccountSecret(
     val accessToken: String = "",
@@ -35,7 +42,12 @@ data class AccountSecret(
 /**
  * Hardware-backed Android Keystore (AES-256-GCM) credential vault storing sensitive session
  * credentials (accessToken, session cookies, CSRF tokens) separately from plaintext preferences.
- * Avoids deprecated EncryptedSharedPreferences while remaining fully compatible with API 24+.
+ *
+ * Security hardening:
+ * - Binds per-account AAD (`kodnext:acct:<accountId>`) into AES-GCM authentication tags to prevent
+ *   cross-account ciphertext swapping while keeping backward-compatible decryption for pre-v0.10 entries.
+ * - Uses [ReplaceFileCorruptionHandler] on DataStore and self-healing Keystore key regeneration so
+ *   OEM OS upgrades or keystore invalidations gracefully trigger re-login instead of crash loops.
  */
 class KodCredentialVault(
     private val context: Context,
@@ -52,7 +64,7 @@ class KodCredentialVault(
                 val rawKey = key.name
                 if (rawKey.startsWith(SECRET_KEY_PREFIX) && value is String && value.isNotBlank()) {
                     val accountId = rawKey.removePrefix(SECRET_KEY_PREFIX)
-                    decryptSecret(value)?.let { secret ->
+                    decryptSecret(value, accountId)?.let { secret ->
                         put(accountId, secret)
                     }
                 }
@@ -62,7 +74,7 @@ class KodCredentialVault(
 
     suspend fun saveSecret(accountId: String, secret: AccountSecret) {
         if (accountId.isBlank()) return
-        val encrypted = encryptSecret(secret)
+        val encrypted = encryptSecret(secret, accountId)
         context.kodSecretDataStore.edit { prefs ->
             prefs[secretKeyFor(accountId)] = encrypted
         }
@@ -72,7 +84,7 @@ class KodCredentialVault(
         if (accountId.isBlank()) return AccountSecret()
         val prefs = context.kodSecretDataStore.data.first()
         val encoded = prefs[secretKeyFor(accountId)].orEmpty()
-        return decryptSecret(encoded) ?: AccountSecret()
+        return decryptSecret(encoded, accountId) ?: AccountSecret()
     }
 
     suspend fun removeSecret(accountId: String) {
@@ -82,18 +94,28 @@ class KodCredentialVault(
         }
     }
 
-    internal fun encryptSecret(secret: AccountSecret): String {
+    internal fun encryptSecret(secret: AccountSecret, accountId: String = ""): String {
         val payload = JSONObject().apply {
             put("accessToken", secret.accessToken)
             put("cookiesHeader", secret.cookiesHeader)
             put("csrfToken", secret.csrfToken)
         }.toString()
-        return encryptString(payload)
+        val aad = buildAadBytes(accountId)
+        return try {
+            encryptString(payload, aad)
+        } catch (_: Throwable) {
+            // Self-heal if Android Keystore key was permanently invalidated after an OS update
+            resetCorruptedKeystoreEntry()
+            encryptString(payload, aad)
+        }
     }
 
-    internal fun decryptSecret(encoded: String): AccountSecret? {
+    internal fun decryptSecret(encoded: String, accountId: String = ""): AccountSecret? {
         if (encoded.isBlank()) return null
-        val plain = decryptString(encoded) ?: return null
+        val aad = buildAadBytes(accountId)
+        val plain = decryptString(encoded, aad)
+            ?: if (aad != null) decryptString(encoded, aad = null) else null
+            ?: return null
         return runCatching {
             val obj = JSONObject(plain)
             AccountSecret(
@@ -104,9 +126,12 @@ class KodCredentialVault(
         }.getOrNull()
     }
 
-    internal fun encryptString(plainText: String): String {
+    internal fun encryptString(plainText: String, aad: ByteArray? = null): String {
         val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateSecretKey())
+        if (aad != null && aad.isNotEmpty()) {
+            cipher.updateAAD(aad)
+        }
         val iv = cipher.iv
         val cipherBytes = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
         val combined = ByteArray(1 + iv.size + cipherBytes.size)
@@ -116,7 +141,7 @@ class KodCredentialVault(
         return Base64.encodeToString(combined, Base64.NO_WRAP)
     }
 
-    internal fun decryptString(encoded: String): String? {
+    internal fun decryptString(encoded: String, aad: ByteArray? = null): String? {
         return runCatching {
             val combined = Base64.decode(encoded, Base64.NO_WRAP)
             if (combined.size < 1 + GCM_IV_LENGTH_BYTES + 1) return null
@@ -126,8 +151,29 @@ class KodCredentialVault(
             val cipherBytes = combined.copyOfRange(1 + ivLength, combined.size)
             val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
             cipher.init(Cipher.DECRYPT_MODE, getOrCreateSecretKey(), GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
+            if (aad != null && aad.isNotEmpty()) {
+                cipher.updateAAD(aad)
+            }
             String(cipher.doFinal(cipherBytes), Charsets.UTF_8)
         }.getOrNull()
+    }
+
+    private fun buildAadBytes(accountId: String): ByteArray? {
+        val clean = accountId.trim()
+        if (clean.isEmpty()) return null
+        return "kodnext:acct:$clean".toByteArray(Charsets.UTF_8)
+    }
+
+    private fun resetCorruptedKeystoreEntry() {
+        synchronized(keyLock) {
+            cachedKey = null
+            runCatching {
+                val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+                if (keyStore.containsAlias(keyAlias)) {
+                    keyStore.deleteEntry(keyAlias)
+                }
+            }
+        }
     }
 
     private fun getOrCreateSecretKey(): SecretKey {

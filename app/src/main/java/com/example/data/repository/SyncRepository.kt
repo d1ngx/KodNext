@@ -6,6 +6,7 @@ import com.example.data.KodSyncEngine
 import com.example.data.SyncOutcome
 import com.example.data.local.SyncRuleDao
 import com.example.data.local.SyncRuleEntity
+import com.example.data.local.SyncSnapshotDao
 import com.example.model.KodAccount
 import com.example.model.SyncRule
 import kotlinx.coroutines.flow.Flow
@@ -19,7 +20,8 @@ class SyncRepository(
     private val context: Context,
     private val syncRuleDao: SyncRuleDao,
     private val accountStore: KodAccountStore,
-    private val syncEngine: KodSyncEngine
+    private val syncEngine: KodSyncEngine,
+    private val syncSnapshotDao: SyncSnapshotDao? = null
 ) {
     fun observeAllRules(): Flow<List<SyncRule>> =
         syncRuleDao.observeAll().map { entities -> entities.map { it.toModel() } }
@@ -50,6 +52,7 @@ class SyncRepository(
 
     suspend fun deleteRule(ruleId: String) {
         KodSyncEngine.cancelRule(context, ruleId)
+        syncSnapshotDao?.deleteByRule(ruleId)
         syncRuleDao.deleteById(ruleId)
     }
 

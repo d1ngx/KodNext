@@ -5,11 +5,16 @@ import com.example.data.KodDirectoryCache
 import com.example.data.local.CachedDirectoryEntity
 import com.example.data.local.DirectoryCacheDao
 import com.example.model.KodAccount
+import com.example.model.KodCollabAssignment
+import com.example.model.KodCollabAuthRole
+import com.example.model.KodCollabTarget
+import com.example.model.KodExistingShareDetail
 import com.example.model.KodFileItem
 import com.example.model.KodShareItem
 import com.example.model.KodTag
 import com.example.model.PathListResult
 import com.example.model.ShareAccessMode
+import com.example.model.ShareCancelMode
 import com.example.model.SortField
 import com.example.model.SortOrder
 import kotlinx.coroutines.Dispatchers
@@ -27,7 +32,26 @@ class FileRepository(
     private val directoryCacheDao: DirectoryCacheDao
 ) {
     private fun sortKey(sortField: SortField, sortOrder: SortOrder): String =
-        "${sortField.apiKey}_${sortOrder.apiKey}"
+        "v2_${sortField.apiKey}_${sortOrder.apiKey}"
+
+    private fun normalizeDepartmentFlagsIfContainer(path: String, result: PathListResult): PathListResult {
+        val isConcreteDir = KodBoxApiClient.isConcreteSourcePath(path) ||
+            KodBoxApiClient.isConcreteSourcePath(result.currentPath)
+        val isDeptContainer = KodBoxApiClient.isDepartmentContainerPath(path) ||
+            KodBoxApiClient.isDepartmentContainerPath(result.currentPath) ||
+            (!isConcreteDir && KodBoxApiClient.isDepartmentContainerTitle(result.currentTitle))
+        if (!isDeptContainer) return result
+        var changed = false
+        val normalized = result.items.map { item ->
+            if (item.isFolder && !item.isDepartmentFolder && !KodBoxApiClient.isNonDepartmentVirtualPath(item.path)) {
+                changed = true
+                item.copy(isDepartmentFolder = true, isSpecialDirectory = true)
+            } else {
+                item
+            }
+        }
+        return if (changed) result.copy(items = normalized) else result
+    }
 
     /**
      * Reads L1 memory cache first, then falls back to L2 Room cache (populating L1 on hit).
@@ -38,7 +62,11 @@ class FileRepository(
         sortField: SortField,
         sortOrder: SortOrder
     ): PathListResult? {
-        memoryCache.get(accountId, path, sortField, sortOrder)?.let { return it }
+        memoryCache.get(accountId, path, sortField, sortOrder)?.let { cached ->
+            val normalized = normalizeDepartmentFlagsIfContainer(path, cached)
+            if (normalized !== cached) memoryCache.put(accountId, path, sortField, sortOrder, normalized)
+            return normalized
+        }
         val entity = withContext(Dispatchers.IO) {
             directoryCacheDao.get(accountId, path.trim(), sortKey(sortField, sortOrder))
         } ?: return null
@@ -46,7 +74,7 @@ class FileRepository(
         val isFreshEnough = System.currentTimeMillis() - entity.cachedAtMs <= L2_CACHE_MAX_AGE_MS
         if (!isFreshEnough) return null
 
-        val decoded = entity.toPathListResult() ?: return null
+        val decoded = entity.toPathListResult()?.let { normalizeDepartmentFlagsIfContainer(path, it) } ?: return null
         memoryCache.put(accountId, path, sortField, sortOrder, decoded)
         return decoded
     }
@@ -159,8 +187,16 @@ class FileRepository(
         item: KodFileItem,
         password: String,
         expireEpochSeconds: Long,
-        accessMode: ShareAccessMode
-    ): Result<KodShareItem> = apiClient.createOrUpdateShare(account, item, password, expireEpochSeconds, accessMode)
+        accessMode: ShareAccessMode,
+        existingShare: KodExistingShareDetail? = null
+    ): Result<KodShareItem> = apiClient.createOrUpdateShare(
+        account = account,
+        item = item,
+        password = password,
+        expireEpochSeconds = expireEpochSeconds,
+        accessMode = accessMode,
+        existingShare = existingShare
+    ).also { if (it.isSuccess) invalidateAccount(account.id) }
 
     suspend fun updateExistingShare(
         account: KodAccount,
@@ -169,8 +205,38 @@ class FileRepository(
         expireEpochSeconds: Long,
         accessMode: ShareAccessMode
     ): Result<KodShareItem> = apiClient.updateExistingShare(account, share, password, expireEpochSeconds, accessMode)
+        .also { if (it.isSuccess) invalidateAccount(account.id) }
 
-    suspend fun cancelShare(account: KodAccount, shareId: String): Result<Unit> = apiClient.cancelShare(account, shareId)
+    suspend fun cancelShare(
+        account: KodAccount,
+        shareId: String,
+        path: String = "",
+        sourceId: String = "",
+        cancelMode: ShareCancelMode = ShareCancelMode.ALL
+    ): Result<Unit> = apiClient.cancelShare(
+        account = account,
+        shareId = shareId,
+        path = path,
+        sourceId = sourceId,
+        cancelMode = cancelMode
+    ).also { if (it.isSuccess) invalidateAccount(account.id) }
+
+    suspend fun fetchItemShareDetail(account: KodAccount, item: KodFileItem): Result<KodExistingShareDetail?> =
+        apiClient.fetchItemShareDetail(account, item)
+
+    suspend fun fetchCollabAuthRoles(account: KodAccount): Result<List<KodCollabAuthRole>> =
+        apiClient.fetchCollabAuthRoles(account)
+
+    suspend fun searchCollabTargets(account: KodAccount, query: String): Result<List<KodCollabTarget>> =
+        apiClient.searchCollabTargets(account, query)
+
+    suspend fun saveInternalCollabShare(
+        account: KodAccount,
+        item: KodFileItem,
+        assignments: List<KodCollabAssignment>,
+        existingShare: KodExistingShareDetail? = null
+    ): Result<KodShareItem> = apiClient.saveInternalCollabShare(account, item, assignments, existingShare)
+        .also { if (it.isSuccess) invalidateAccount(account.id) }
 
     companion object {
         private const val L2_CACHE_MAX_AGE_MS = 14L * 24L * 60L * 60L * 1000L // 14 days offline support

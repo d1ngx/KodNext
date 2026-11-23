@@ -4,7 +4,9 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -21,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LockReset
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -30,6 +33,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.DisposableEffect
@@ -41,16 +45,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.LocalFileOpener
+import com.example.ui.components.ModalOverlayTracker
+import com.example.ui.components.TrackModalOverlay
 import com.example.ui.screens.AccountCenterScreen
 import com.example.ui.screens.FilePreviewScreen
 import com.example.ui.screens.KodAppWorkspaceScreen
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.MainWorkspaceScreen
+import com.example.ui.screens.OAuthLoginWebViewScreen
 import com.example.ui.screens.QrScannerScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.KodNextTheme
@@ -61,6 +68,16 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
 
     private val viewModel: KodViewModel by viewModels()
+    private var activeToast: Toast? = null
+
+    private fun showTopLayerToast(message: String, isLong: Boolean) {
+        activeToast?.cancel()
+        activeToast = Toast.makeText(
+            this,
+            message,
+            if (isLong) Toast.LENGTH_LONG else Toast.LENGTH_SHORT
+        ).also { it.show() }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -85,43 +102,100 @@ class MainActivity : ComponentActivity() {
 
             LaunchedEffect(Unit) {
                 viewModel.events.collect { event ->
+                    val modalOpen = ModalOverlayTracker.hasActiveModal()
                     when (event) {
                         is KodUiEvent.ShowMessage -> {
-                            launch {
-                                snackbarHostState.currentSnackbarData?.dismiss()
-                                snackbarHostState.showSnackbar(
-                                    message = event.message,
-                                    duration = if (event.isError) SnackbarDuration.Long else SnackbarDuration.Short
-                                )
+                            if (modalOpen) {
+                                showTopLayerToast(event.message, isLong = event.isError)
+                            } else {
+                                launch {
+                                    snackbarHostState.currentSnackbarData?.dismiss()
+                                    snackbarHostState.showSnackbar(
+                                        message = event.message,
+                                        duration = if (event.isError) SnackbarDuration.Long else SnackbarDuration.Short
+                                    )
+                                }
                             }
                         }
                         is KodUiEvent.CopyToClipboard -> {
                             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             clipboard.setPrimaryClip(ClipData.newPlainText(event.label, event.text))
-                            launch {
-                                snackbarHostState.currentSnackbarData?.dismiss()
-                                snackbarHostState.showSnackbar(
-                                    message = "已复制到剪贴板",
-                                    duration = SnackbarDuration.Short
-                                )
+                            if (modalOpen) {
+                                showTopLayerToast("已复制到剪贴板", isLong = false)
+                            } else {
+                                launch {
+                                    snackbarHostState.currentSnackbarData?.dismiss()
+                                    snackbarHostState.showSnackbar(
+                                        message = "已复制到剪贴板",
+                                        duration = SnackbarDuration.Short
+                                    )
+                                }
                             }
                         }
                         is KodUiEvent.OpenLocalFile -> {
-                            runCatching {
-                                val uri = FileProvider.getUriForFile(
-                                    this@MainActivity,
-                                    "$packageName.fileprovider",
-                                    event.file
-                                )
-                                val intent = Intent(Intent.ACTION_VIEW).apply {
-                                    setDataAndType(uri, event.mimeType)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            when (val outcome = LocalFileOpener.openFile(this@MainActivity, event.file, event.mimeType)) {
+                                LocalFileOpener.OpenOutcome.Opened -> Unit
+                                is LocalFileOpener.OpenOutcome.Failed -> {
+                                    if (modalOpen) {
+                                        showTopLayerToast(outcome.message, isLong = true)
+                                    } else {
+                                        launch {
+                                            snackbarHostState.currentSnackbarData?.dismiss()
+                                            snackbarHostState.showSnackbar(
+                                                message = outcome.message,
+                                                duration = SnackbarDuration.Long
+                                            )
+                                        }
+                                    }
                                 }
-                                startActivity(Intent.createChooser(intent, "打开文件"))
-                            }.onFailure {
+                            }
+                        }
+                        is KodUiEvent.ShareLocalFile -> {
+                            when (val outcome = LocalFileOpener.shareFile(this@MainActivity, event.file, event.mimeType)) {
+                                LocalFileOpener.OpenOutcome.Opened -> Unit
+                                is LocalFileOpener.OpenOutcome.Failed -> {
+                                    if (modalOpen) {
+                                        showTopLayerToast(outcome.message, isLong = false)
+                                    } else {
+                                        launch {
+                                            snackbarHostState.currentSnackbarData?.dismiss()
+                                            snackbarHostState.showSnackbar(
+                                                message = outcome.message,
+                                                duration = SnackbarDuration.Short
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        is KodUiEvent.DownloadCompleted -> {
+                            if (modalOpen) {
+                                showTopLayerToast("下载完成：${event.task.fileName}", isLong = false)
+                            } else {
                                 launch {
                                     snackbarHostState.currentSnackbarData?.dismiss()
-                                    snackbarHostState.showSnackbar("未找到可打开此类型文件的应用")
+                                    val result = snackbarHostState.showSnackbar(
+                                        message = "下载完成：${event.task.fileName}",
+                                        actionLabel = "打开",
+                                        duration = SnackbarDuration.Long
+                                    )
+                                    if (result == SnackbarResult.ActionPerformed) {
+                                        viewModel.openDownloadedTransfer(event.task)
+                                    }
+                                }
+                            }
+                        }
+                        is KodUiEvent.OpenExternalUrl -> {
+                            runCatching {
+                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(event.url)))
+                            }.onFailure {
+                                if (modalOpen) {
+                                    showTopLayerToast("无法打开更新下载链接", isLong = false)
+                                } else {
+                                    launch {
+                                        snackbarHostState.currentSnackbarData?.dismiss()
+                                        snackbarHostState.showSnackbar("无法打开更新下载链接")
+                                    }
                                 }
                             }
                         }
@@ -139,6 +213,7 @@ class MainActivity : ComponentActivity() {
 
                 val isShowingMainWorkspace = state.isHydrated &&
                     !state.showQrScanner &&
+                    state.activeOAuthSession == null &&
                     activeAccount != null &&
                     !state.showAddAccountLogin &&
                     state.activeWorkspaceApp == null &&
@@ -158,6 +233,23 @@ class MainActivity : ComponentActivity() {
                             QrScannerScreen(
                                 onQrScanned = { viewModel.handleScannedQrContent(it) },
                                 onClose = { viewModel.openQrScanner(false) }
+                            )
+                        }
+
+                        state.activeOAuthSession != null -> {
+                            val oauth = state.activeOAuthSession!!
+                            OAuthLoginWebViewScreen(
+                                serverUrl = oauth.serverUrl,
+                                provider = oauth.provider,
+                                onBack = { viewModel.cancelOAuthLogin() },
+                                onTryCompleteOAuth = { url, cookies, token, silent ->
+                                    viewModel.completeOAuthLogin(
+                                        serverUrl = url,
+                                        cookieHeader = cookies,
+                                        tokenCandidate = token,
+                                        silentOnNotLoggedIn = silent
+                                    )
+                                }
                             )
                         }
 
@@ -181,6 +273,7 @@ class MainActivity : ComponentActivity() {
                             val app = state.activeWorkspaceApp!!
                             KodAppWorkspaceScreen(
                                 account = activeAccount,
+                                apiClient = viewModel.apiClient,
                                 app = app,
                                 onCopyUrl = { url -> viewModel.copyText(app.title, url) },
                                 onBack = { viewModel.closeWorkspaceApp() },
@@ -236,8 +329,13 @@ class MainActivity : ComponentActivity() {
                                 imageLoader = imageLoader,
                                 onBack = { viewModel.openSettings(false) },
                                 onCheckConnection = { viewModel.refreshAccountQuota() },
+                                onSaveLanEndpoint = { lanUrl, preferLan -> viewModel.saveAccountLanEndpoint(lanUrl, preferLan) },
+                                onProbeEndpoint = { viewModel.probeActiveEndpoint() },
                                 onSetTheme = { viewModel.setThemePreference(it) },
                                 onUpdatePrefs = { viewModel.updatePreferences(it) },
+                                onToggleAutoCheckUpdates = { viewModel.setAutoCheckUpdates(it) },
+                                onCheckForUpdate = { viewModel.checkForUpdates(manual = true) },
+                                onDownloadUpdate = { viewModel.openUpdateDownload() },
                                 onClearCache = { viewModel.clearImageCache() }
                             )
                         }
@@ -271,8 +369,10 @@ class MainActivity : ComponentActivity() {
                         !expiredNotice.dialogDismissed &&
                         activeAccount != null &&
                         !state.showAddAccountLogin &&
+                        state.activeOAuthSession == null &&
                         !state.showQrScanner
                     ) {
+                        TrackModalOverlay()
                         AlertDialog(
                             onDismissRequest = { viewModel.dismissSessionExpiredDialog() },
                             icon = {
@@ -335,6 +435,80 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             modifier = Modifier.testTag("session_expired_dialog")
+                        )
+                    }
+
+                    // Global App Update Available Dialog (Creator Program compliant external browser download)
+                    val updateInfo = state.availableUpdate
+                    if (updateInfo != null &&
+                        !state.updateDialogDismissed &&
+                        (expiredNotice == null || expiredNotice.dialogDismissed) &&
+                        state.activeOAuthSession == null &&
+                        !state.showQrScanner
+                    ) {
+                        TrackModalOverlay()
+                        AlertDialog(
+                            onDismissRequest = {
+                                if (!updateInfo.forceUpdate) viewModel.dismissUpdateDialog()
+                            },
+                            icon = {
+                                Icon(
+                                    imageVector = Icons.Filled.SystemUpdate,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(30.dp)
+                                )
+                            },
+                            title = {
+                                Text(
+                                    text = "发现新版本 v${updateInfo.versionName}",
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        text = "当前版本 v${BuildConfig.VERSION_NAME} → 最新版本 v${updateInfo.versionName}",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    if (updateInfo.changelog.isNotBlank()) {
+                                        Text(
+                                            text = updateInfo.changelog,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "更新源站点已发布新版安装包，点击下方按钮前往浏览器下载安装。",
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
+                                    Text(
+                                        text = "更新来源：${updateInfo.sourceUrl}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = { viewModel.openUpdateDownload() },
+                                    modifier = Modifier.testTag("update_download_button")
+                                ) {
+                                    Text("前往下载更新包")
+                                }
+                            },
+                            dismissButton = {
+                                if (!updateInfo.forceUpdate) {
+                                    TextButton(
+                                        onClick = { viewModel.dismissUpdateDialog() },
+                                        modifier = Modifier.testTag("update_dismiss_button")
+                                    ) {
+                                        Text("稍后提醒")
+                                    }
+                                }
+                            },
+                            modifier = Modifier.testTag("app_update_dialog")
                         )
                     }
                 }

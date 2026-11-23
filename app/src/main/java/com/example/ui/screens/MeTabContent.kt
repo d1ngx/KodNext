@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -25,7 +26,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.SwitchAccount
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -54,18 +55,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.ImageLoader
 import com.example.BuildConfig
+import com.example.data.KodAppUpdateChecker
 import com.example.data.KodFormatters
 import com.example.model.KodAccount
 import com.example.ui.components.KodUserAvatar
+import com.example.ui.components.TrackModalOverlay
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.viewmodel.KodUiState
 
 /**
  * Clean, zero-duplication "我的" (Me) tab:
- * - Top bar ("我的" + single QR scan icon) is rendered in Scaffold.topBar for seamless status-bar inset handling.
- * - Profile & Storage Card acts as the single authoritative entry to 账号中心 (no duplicate list row).
- * - Group 1 (同步与多账号): 自动备份与同步, 切换 / 添加账号, 更多网盘应用 (when available).
- * - Group 2 (管理与偏好): 后台管理 (admin only), Web 网页端, 应用设置 (single authoritative entry), 关于.
+ * - Top bar ("我的" + Switch Account & QR scan icons) is rendered in Scaffold.topBar.
+ * - Profile & Storage Card acts as the single authoritative entry to 账号中心.
+ * - Group 1 (同步与扩展): 自动备份与同步, 更多网盘应用 (when available).
+ * - Group 2 (管理与偏好): 后台管理 (admin only), Web 页面, 应用设置, 关于.
  */
 @Composable
 fun MeTabContent(
@@ -75,10 +78,10 @@ fun MeTabContent(
     onOpenSettings: () -> Unit,
     onOpenAccountCenter: () -> Unit,
     onOpenSyncScreen: () -> Unit,
-    onOpenAccountSwitcher: () -> Unit,
     onOpenWebAdmin: () -> Unit,
     onOpenWebPortal: () -> Unit,
     onOpenAppHub: () -> Unit,
+    onCheckUpdate: () -> Unit,
     onCopyDiagnostics: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -228,7 +231,7 @@ fun MeTabContent(
             }
         }
 
-        // Group 1: Sync, Multi-Account Switcher, Workspace Apps
+        // Group 1: Sync & Workspace Apps (Account Switcher moved to top-right bar for single-line clarity)
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -246,18 +249,6 @@ fun MeTabContent(
                     trailingText = if (state.syncRules.isNotEmpty()) "$activeSyncCount/${state.syncRules.size} 规则" else "双向同步",
                     onClick = onOpenSyncScreen,
                     tag = "me_row_sync"
-                )
-                HorizontalDivider(
-                    modifier = Modifier.padding(start = 56.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                )
-                MeActionRow(
-                    icon = Icons.Filled.SwitchAccount,
-                    iconTint = Color(0xFF0EA5E9),
-                    title = "切换 / 添加账号",
-                    trailingText = if (state.accounts.size > 1) "${state.accounts.size} 个站点" else account.hostLabel,
-                    onClick = onOpenAccountSwitcher,
-                    tag = "me_row_switch_account"
                 )
                 if (state.visibleWorkspaceApps.isNotEmpty()) {
                     HorizontalDivider(
@@ -324,11 +315,13 @@ fun MeTabContent(
                     modifier = Modifier.padding(start = 56.dp),
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                 )
+                val updateBadge = state.availableUpdate?.let { "发现 v${it.versionName}" }
                 MeActionRow(
                     icon = Icons.Filled.Info,
                     iconTint = Color(0xFF0EA5E9),
                     title = "关于",
-                    trailingText = "v${BuildConfig.VERSION_NAME}",
+                    trailingText = updateBadge ?: "v${BuildConfig.VERSION_NAME}",
+                    trailingHighlight = updateBadge != null,
                     onClick = { showAboutDialog = true },
                     tag = "me_row_about"
                 )
@@ -347,6 +340,7 @@ fun MeTabContent(
             appendLine("登录账号：${account.displayName} (@${account.username})")
         }.trim()
 
+        TrackModalOverlay()
         AlertDialog(
             onDismissRequest = { showAboutDialog = false },
             title = { Text("关于 KodNext") },
@@ -391,12 +385,26 @@ fun MeTabContent(
                 ) {
                     Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("复制诊断信息")
+                    Text("复制诊断")
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showAboutDialog = false }) {
-                    Text("知道了")
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (KodAppUpdateChecker.hasFixedUpdateUrl()) {
+                        TextButton(
+                            onClick = {
+                                showAboutDialog = false
+                                onCheckUpdate()
+                            }
+                        ) {
+                            Icon(Icons.Filled.SystemUpdate, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("检查更新")
+                        }
+                    }
+                    TextButton(onClick = { showAboutDialog = false }) {
+                        Text("知道了")
+                    }
                 }
             }
         )
@@ -409,6 +417,7 @@ private fun MeActionRow(
     iconTint: Color,
     title: String,
     trailingText: String = "",
+    trailingHighlight: Boolean = false,
     onClick: () -> Unit,
     tag: String
 ) {
@@ -439,16 +448,21 @@ private fun MeActionRow(
             text = title,
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
         if (trailingText.isNotBlank()) {
             Text(
                 text = trailingText,
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (trailingHighlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = if (trailingHighlight) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(end = 4.dp)
+                modifier = Modifier
+                    .widthIn(max = 156.dp)
+                    .padding(start = 8.dp, end = 4.dp)
             )
         }
         Icon(

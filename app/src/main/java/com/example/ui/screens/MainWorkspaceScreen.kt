@@ -45,11 +45,11 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.NoteAdd
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.material.icons.filled.SwitchAccount
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material.icons.outlined.Folder
@@ -103,6 +103,8 @@ import com.example.model.FilterSizeRange
 import com.example.model.KodSpace
 import com.example.model.MainTab
 import com.example.model.ShareAccessMode
+import com.example.model.ShareCancelMode
+import com.example.model.ShareSubTab
 import com.example.model.SortField
 import com.example.model.SortOrder
 import com.example.model.ViewMode
@@ -394,7 +396,7 @@ fun MainWorkspaceScreen(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .statusBarsPadding()
-                                        .padding(start = 20.dp, end = 12.dp, top = 8.dp, bottom = 4.dp),
+                                        .padding(start = 20.dp, end = 16.dp, top = 8.dp, bottom = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
@@ -403,14 +405,34 @@ fun MainWorkspaceScreen(
                                         style = MaterialTheme.typography.headlineSmall,
                                         fontWeight = FontWeight.Bold
                                     )
-                                    IconButton(
-                                        onClick = { viewModel.openQrScanner(true) },
-                                        modifier = Modifier.testTag("me_qr_scan_button")
+                                    Surface(
+                                        onClick = { showAccountSwitcher = true },
+                                        shape = RoundedCornerShape(20.dp),
+                                        color = MaterialTheme.colorScheme.secondaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.testTag("me_switch_account_button")
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.QrCodeScanner,
-                                            contentDescription = "扫一扫登录或授权"
-                                        )
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.SwitchAccount,
+                                                contentDescription = "切换或添加账号",
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Text(
+                                                text = if (state.accounts.size > 1) {
+                                                    "切换账号 · ${state.accounts.size}"
+                                                } else {
+                                                    "切换账号"
+                                                },
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.Medium,
+                                                maxLines = 1
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -753,7 +775,20 @@ fun MainWorkspaceScreen(
                                 viewModel.copyText("网盘外链", payload)
                             },
                             onEditShare = { share -> viewModel.showEditShareDialog(share) },
-                            onCancelShare = { share -> viewModel.cancelShare(share.shareId) },
+                            onEditCollabShare = { share -> viewModel.showEditCollabShare(share) },
+                            onCancelShare = { share ->
+                                val mode = when {
+                                    state.activeShareSubTab == ShareSubTab.EXTERNAL_LINKS && share.isShareTo -> ShareCancelMode.EXTERNAL_LINK_ONLY
+                                    state.activeShareSubTab == ShareSubTab.MY_COLLAB && share.isLink -> ShareCancelMode.INTERNAL_COLLAB_ONLY
+                                    else -> ShareCancelMode.ALL
+                                }
+                                viewModel.cancelShare(
+                                    shareId = share.shareId,
+                                    path = share.path,
+                                    sourceId = share.sourceId,
+                                    cancelMode = mode
+                                )
+                            },
                             onOpenSharedResource = { path, title, isFolder, ext, size ->
                                 viewModel.openSharedResource(path, title, isFolder, ext, size)
                             }
@@ -763,11 +798,14 @@ fun MainWorkspaceScreen(
                             state = state,
                             onOpenRemoteFolderPicker = { viewModel.openRemoteSyncFolderPicker() },
                             onClearPickedRemote = { viewModel.clearPickedSyncRemote() },
-                            onCreateSyncRule = { name, uri, localLabel, remotePath, remoteLabel, dir, freq, wifiOnly ->
-                                viewModel.createSyncRule(name, uri, localLabel, remotePath, remoteLabel, dir, freq, wifiOnly)
+                            onCreateSyncRule = { name, uri, localLabel, remotePath, remoteLabel, dir, freq, wifiOnly, conflictPolicy, ignoreHidden ->
+                                viewModel.createSyncRule(
+                                    name, uri, localLabel, remotePath, remoteLabel, dir, freq, wifiOnly, conflictPolicy, ignoreHidden
+                                )
                             },
                             onToggleEnabled = { rule, enabled -> viewModel.toggleSyncRuleEnabled(rule, enabled) },
                             onChangeFrequency = { rule, freq -> viewModel.updateSyncRuleFrequency(rule, freq) },
+                            onChangeConflictPolicy = { rule, policy -> viewModel.updateSyncRuleConflictPolicy(rule, policy) },
                             onRunNow = { rule -> viewModel.runSyncRuleNow(rule) },
                             onRunAllNow = { viewModel.runAllSyncRulesNow() },
                             onDeleteRule = { rule -> viewModel.deleteSyncRule(rule) }
@@ -789,6 +827,7 @@ fun MainWorkspaceScreen(
                                     viewModel.openFilePreview(item)
                                 }
                             },
+                            onItemShareClick = { item -> viewModel.showShareDialog(item) },
                             onItemMoreClick = { item -> viewModel.showActionSheet(item) }
                         )
 
@@ -818,6 +857,7 @@ fun MainWorkspaceScreen(
                                 }
                             },
                             onItemLongClick = { item -> viewModel.toggleItemSelection(item) },
+                            onItemShareClick = { item -> viewModel.showShareDialog(item) },
                             onItemMoreClick = { item -> viewModel.showActionSheet(item) },
                             onToggleReadmeExpanded = { viewModel.toggleDirectoryReadmeExpanded() },
                             onEmptyRecycleBin = { showEmptyTrashConfirm = true },
@@ -829,6 +869,7 @@ fun MainWorkspaceScreen(
                             onCancelTask = { viewModel.cancelTransfer(it) },
                             onRetryTask = { viewModel.retryTransfer(it) },
                             onOpenDownloaded = { viewModel.openDownloadedTransfer(it) },
+                            onShareDownloaded = { viewModel.shareDownloadedTransfer(it) },
                             onClearFinished = { viewModel.clearFinishedTransfers() }
                         )
 
@@ -839,10 +880,10 @@ fun MainWorkspaceScreen(
                             onOpenSettings = { viewModel.openSettings(true) },
                             onOpenAccountCenter = { viewModel.openAccountCenter(true) },
                             onOpenSyncScreen = { viewModel.openSyncScreen() },
-                            onOpenAccountSwitcher = { showAccountSwitcher = true },
                             onOpenWebAdmin = { viewModel.openWebAdminPortal() },
                             onOpenWebPortal = { viewModel.openWebDrivePortal() },
                             onOpenAppHub = { viewModel.toggleAppHubSheet(true) },
+                            onCheckUpdate = { viewModel.checkForUpdates(manual = true) },
                             onCopyDiagnostics = { viewModel.copyText("KodNext 诊断信息", it) }
                         )
                     }
@@ -924,10 +965,36 @@ fun MainWorkspaceScreen(
         KodShareConfigDialog(
             titleName = item.name,
             isFolder = item.isFolder,
+            initialTab = state.shareDialogInitialTab,
+            allowInternalCollab = true,
+            isItemAlreadyShared = item.isShare,
+            existingDetail = state.shareExistingDetail,
+            isLoadingDetail = state.isLoadingShareDetail,
+            authRoles = state.collabAuthRoles,
+            collabCandidates = state.collabTargetCandidates,
+            isSearchingCollabTargets = state.isSearchingCollabTargets,
+            collabSearchError = state.collabSearchError,
             createdShare = state.createdShareResult,
             isWorking = state.isWorking,
+            onSelectTab = { tab ->
+                if (tab == com.example.model.ShareDialogTab.INTERNAL_COLLAB) {
+                    viewModel.ensureCollabDataLoaded()
+                }
+            },
+            onSearchCollabTargets = { query -> viewModel.searchCollabTargets(query) },
+            onSaveInternalCollab = { assignments -> viewModel.saveInternalCollabShare(item, assignments) },
             onSaveShare = { pwd, expireSec, mode ->
                 viewModel.createShareLink(item, pwd, expireSec, mode)
+            },
+            onCancelShare = { cancelMode ->
+                val sid = state.createdShareResult?.shareId?.ifBlank { null }
+                    ?: state.shareExistingDetail?.shareId.orEmpty()
+                viewModel.cancelShare(
+                    shareId = sid,
+                    path = item.path,
+                    sourceId = item.sourceId,
+                    cancelMode = cancelMode
+                )
             },
             onCopyUrl = { viewModel.copyText("网盘外链", it) },
             onDismiss = { viewModel.showShareDialog(null) }
@@ -943,14 +1010,35 @@ fun MainWorkspaceScreen(
         KodShareConfigDialog(
             titleName = existing.title,
             isFolder = existing.isFolder,
+            allowInternalCollab = false,
             initialPassword = existing.password,
             initialExpireEpochSeconds = existing.timeTo,
             initialAccessMode = initialMode,
             isEditingExisting = true,
+            existingDetail = com.example.model.KodExistingShareDetail(
+                shareId = existing.shareId,
+                isLink = true,
+                isShareTo = existing.isShareTo,
+                shareUrl = existing.shareUrl,
+                shareHash = existing.shareHash,
+                password = existing.password,
+                timeTo = existing.timeTo,
+                notDownload = existing.notDownload,
+                notView = existing.notView,
+                canUpload = existing.canUpload
+            ),
             createdShare = state.createdShareResult,
             isWorking = state.isWorking,
             onSaveShare = { pwd, expireSec, mode ->
                 viewModel.updateExistingShare(existing, pwd, expireSec, mode)
+            },
+            onCancelShare = { cancelMode ->
+                viewModel.cancelShare(
+                    shareId = existing.shareId,
+                    path = existing.path,
+                    sourceId = existing.sourceId,
+                    cancelMode = cancelMode
+                )
             },
             onCopyUrl = { viewModel.copyText("网盘外链", it) },
             onDismiss = { viewModel.showEditShareDialog(null) }

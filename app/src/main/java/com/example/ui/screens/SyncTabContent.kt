@@ -1,6 +1,9 @@
 package com.example.ui.screens
 
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -26,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.BatterySaver
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -34,6 +38,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.SyncAlt
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -52,6 +57,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -67,11 +73,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import com.example.data.KodFormatters
+import com.example.model.SyncConflictPolicy
 import com.example.model.SyncDirection
 import com.example.model.SyncFrequency
 import com.example.model.SyncRule
 import com.example.model.SyncRunStatus
 import com.example.ui.components.EmptyFolderState
+import com.example.ui.components.TrackModalOverlay
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.StatusSuccess
 import com.example.viewmodel.KodUiState
@@ -90,10 +98,13 @@ fun SyncTabContent(
         remoteFolderLabel: String,
         direction: SyncDirection,
         frequency: SyncFrequency,
-        wifiOnly: Boolean
+        wifiOnly: Boolean,
+        conflictPolicy: SyncConflictPolicy,
+        ignoreHiddenFiles: Boolean
     ) -> Unit,
     onToggleEnabled: (SyncRule, Boolean) -> Unit,
     onChangeFrequency: (SyncRule, SyncFrequency) -> Unit,
+    onChangeConflictPolicy: (SyncRule, SyncConflictPolicy) -> Unit = { _, _ -> },
     onRunNow: (SyncRule) -> Unit,
     onRunAllNow: () -> Unit,
     onDeleteRule: (SyncRule) -> Unit,
@@ -101,6 +112,7 @@ fun SyncTabContent(
 ) {
     val context = LocalContext.current
     var showCreateSheet by remember { mutableStateOf(false) }
+    var showBatteryGuideSheet by remember { mutableStateOf(false) }
 
     // Draft state for creating a new sync rule
     var draftName by remember { mutableStateOf("") }
@@ -109,6 +121,8 @@ fun SyncTabContent(
     var draftDirection by remember { mutableStateOf(SyncDirection.TWO_WAY) }
     var draftFrequency by remember { mutableStateOf(SyncFrequency.HOURLY) }
     var draftWifiOnly by remember { mutableStateOf(true) }
+    var draftConflictPolicy by remember { mutableStateOf(SyncConflictPolicy.KEEP_BOTH_CONFLICT_COPY) }
+    var draftIgnoreHidden by remember { mutableStateOf(true) }
 
     // Zero-permission SAF folder picker
     val openLocalFolderLauncher = rememberLauncherForActivityResult(
@@ -202,6 +216,28 @@ fun SyncTabContent(
                     Text("全部同步")
                 }
             }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "三路快照增量比对 · 支持冲突副本防覆盖",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                TextButton(
+                    onClick = { showBatteryGuideSheet = true },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier.testTag("sync_battery_guide_button")
+                ) {
+                    Icon(Icons.Filled.BatterySaver, contentDescription = null, modifier = Modifier.size(15.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("后台保活指引", style = MaterialTheme.typography.labelSmall)
+                }
+            }
         }
 
         if (state.syncRules.isEmpty()) {
@@ -226,6 +262,7 @@ fun SyncTabContent(
                         isSyncing = isSyncing,
                         onToggleEnabled = { onToggleEnabled(rule, it) },
                         onChangeFrequency = { onChangeFrequency(rule, it) },
+                        onChangeConflictPolicy = { onChangeConflictPolicy(rule, it) },
                         onRunNow = { onRunNow(rule) },
                         onDelete = { onDeleteRule(rule) }
                     )
@@ -235,6 +272,7 @@ fun SyncTabContent(
     }
 
     if (showCreateSheet) {
+        TrackModalOverlay()
         ModalBottomSheet(
             onDismissRequest = {
                 showCreateSheet = false
@@ -361,6 +399,27 @@ fun SyncTabContent(
                     }
                 }
 
+                // Step 5: Conflict Resolution Strategy (3-way snapshot)
+                Text("冲突处理策略（双端同时修改时）", style = MaterialTheme.typography.labelLarge)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    SyncConflictPolicy.entries.forEach { policy ->
+                        FilterChip(
+                            selected = draftConflictPolicy == policy,
+                            onClick = { draftConflictPolicy = policy },
+                            label = { Text(policy.label) },
+                            modifier = Modifier.testTag("sync_conflict_${policy.name}")
+                        )
+                    }
+                }
+                Text(
+                    text = draftConflictPolicy.subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -371,6 +430,18 @@ fun SyncTabContent(
                         Text("仅在 Wi-Fi 网络下自动同步", style = MaterialTheme.typography.bodyMedium)
                     }
                     Switch(checked = draftWifiOnly, onCheckedChange = { draftWifiOnly = it })
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Filled.VisibilityOff, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Text("自动忽略以 . 开头的隐藏与临时文件", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Switch(checked = draftIgnoreHidden, onCheckedChange = { draftIgnoreHidden = it })
                 }
 
                 Button(
@@ -384,7 +455,9 @@ fun SyncTabContent(
                             effectiveRemoteLabel,
                             draftDirection,
                             draftFrequency,
-                            draftWifiOnly
+                            draftWifiOnly,
+                            draftConflictPolicy,
+                            draftIgnoreHidden
                         )
                         draftName = ""
                         draftLocalUri = ""
@@ -403,6 +476,164 @@ fun SyncTabContent(
             }
         }
     }
+
+    if (showBatteryGuideSheet) {
+        TrackModalOverlay()
+        val romGuide = remember { resolveRomBackgroundGuide() }
+        ModalBottomSheet(onDismissRequest = { showBatteryGuideSheet = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.BatterySaver,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Column {
+                        Text("后台同步防杀与省电指引", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "检测到当前系统：${romGuide.vendorLabel}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        romGuide.steps.forEachIndexed { idx, step ->
+                            Text(
+                                text = "${idx + 1}. $step",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = "提示：为符合 Android 15 后台规范，小文件传输与定时同步默认采用低功耗 WorkManager 调度，不占用前台服务配额；将本应用设为“无限制”即可保障夜间及息屏定时同步稳定触发。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            runCatching {
+                                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                    data = Uri.fromParts("package", context.packageName, null)
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(intent)
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("应用详情设置")
+                    }
+                    Button(
+                        onClick = {
+                            val opened = runCatching {
+                                val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(intent)
+                                true
+                            }.getOrDefault(false)
+                            if (!opened) {
+                                runCatching {
+                                    val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                        data = Uri.fromParts("package", context.packageName, null)
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    context.startActivity(fallback)
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("电池优化设置")
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+        }
+    }
+}
+
+private data class RomBackgroundGuide(
+    val vendorLabel: String,
+    val steps: List<String>
+)
+
+private fun resolveRomBackgroundGuide(): RomBackgroundGuide {
+    val manufacturer = Build.MANUFACTURER.orEmpty().lowercase()
+    return when {
+        manufacturer.contains("xiaomi") || manufacturer.contains("redmi") || manufacturer.contains("poco") -> RomBackgroundGuide(
+            vendorLabel = "小米 / Redmi (HyperOS / MIUI)",
+            steps = listOf(
+                "点击下方「应用详情设置」-> 省电策略 -> 选择「无限制」",
+                "在同一页面开启「自启动」开关（如设备提供）",
+                "在多任务卡片页长按本应用并点击锁头图标，避免一键清理中断同步"
+            )
+        )
+        manufacturer.contains("oneplus") || manufacturer.contains("oppo") || manufacturer.contains("realme") -> RomBackgroundGuide(
+            vendorLabel = "一加 / OPPO / realme (ColorOS)",
+            steps = listOf(
+                "点击「应用详情设置」-> 耗电管理 -> 开启「允许后台运行」与「允许完全后台行为」",
+                "如有「允许自启动」选项，请同步开启",
+                "进入「电池优化设置」将本应用设为「不优化」"
+            )
+        )
+        manufacturer.contains("huawei") || manufacturer.contains("honor") -> RomBackgroundGuide(
+            vendorLabel = "华为 / 荣耀 (HarmonyOS / MagicOS)",
+            steps = listOf(
+                "点击「应用详情设置」-> 耗电详情 / 应用启动管理",
+                "关闭「自动管理」，改为手动并勾选「允许自启动」与「允许后台活动」",
+                "在「电池优化设置」中选择「不允许」电池优化"
+            )
+        )
+        manufacturer.contains("vivo") || manufacturer.contains("iqoo") -> RomBackgroundGuide(
+            vendorLabel = "vivo / iQOO (OriginOS)",
+            steps = listOf(
+                "点击「应用详情设置」-> 耗电 -> 后台耗电管理 -> 选择「允许后台高耗电」",
+                "在 i 管家 -> 应用管理 -> 权限管理中允许自启动"
+            )
+        )
+        manufacturer.contains("samsung") -> RomBackgroundGuide(
+            vendorLabel = "三星 (One UI)",
+            steps = listOf(
+                "点击「应用详情设置」-> 电池 -> 选择「不受限制」",
+                "在设置 -> 电池 -> 后台使用限制中，将本应用加入「永不休眠的应用程序」"
+            )
+        )
+        else -> RomBackgroundGuide(
+            vendorLabel = "标准 Android (${Build.MANUFACTURER.ifBlank { "Android" }})",
+            steps = listOf(
+                "点击下方「电池优化设置」，找到本应用并切换为「不优化 / 无限制」",
+                "确保未在系统设置中限制本应用的后台网络访问"
+            )
+        )
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -412,6 +643,7 @@ private fun SyncRuleCard(
     isSyncing: Boolean,
     onToggleEnabled: (Boolean) -> Unit,
     onChangeFrequency: (SyncFrequency) -> Unit,
+    onChangeConflictPolicy: (SyncConflictPolicy) -> Unit,
     onRunNow: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -440,9 +672,11 @@ private fun SyncRuleCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "${rule.direction.label} · ${if (rule.wifiOnly) "仅 Wi-Fi" else "任意网络"}",
+                        text = "${rule.direction.label} · ${if (rule.wifiOnly) "仅 Wi-Fi" else "任意网络"} · ${rule.conflictPolicy.label}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 Switch(

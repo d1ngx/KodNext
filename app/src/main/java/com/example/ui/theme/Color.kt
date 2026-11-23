@@ -57,6 +57,7 @@ val StatusError = Color(0xFFDC2626)
 val StatusErrorDark = Color(0xFFF87171)
 
 val FileFolderColor = Color(0xFF0074C8)
+val FileDepartmentFolderColor = Color(0xFF4F46E5)
 val FileImageColor = Color(0xFF0EA5E9)
 val FileVideoColor = Color(0xFF7C3AED)
 val FileAudioColor = Color(0xFF0D9488)

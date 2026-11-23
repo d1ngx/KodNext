@@ -88,8 +88,8 @@ import com.example.viewmodel.LoginStep
 
 /**
  * Modern 2-step login experience:
- * - Step 1: Clean full-width single-line server URL probe + prominent QR code scan login
- * - Step 2: Unlocked ONLY after server connectivity verification succeeds (Account + Password)
+ * - Step 1: Clean full-width single-line server URL probe + QR code scan login
+ * - Step 2: Unlocked after server connectivity verification succeeds (Account + Password + Captcha)
  */
 @Composable
 fun LoginScreen(
@@ -322,7 +322,7 @@ fun LoginScreen(
                             Spacer(modifier = Modifier.height(10.dp))
 
                             Text(
-                                text = "输入浏览器打开网盘时显示的网址，检测连通后进入账号登录",
+                                text = "输入浏览器打开网盘时显示的网址，自动检测服务器连通状态",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.White.copy(alpha = 0.84f),
                                 modifier = Modifier
@@ -695,3 +695,4 @@ fun LoginScreen(
         }
     }
 }
+

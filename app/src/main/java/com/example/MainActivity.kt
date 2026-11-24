@@ -57,6 +57,7 @@ import com.example.ui.screens.FilePreviewScreen
 import com.example.ui.screens.KodAppWorkspaceScreen
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.MainWorkspaceScreen
+import com.example.ui.screens.ManageAccountsScreen
 import com.example.ui.screens.OAuthLoginWebViewScreen
 import com.example.ui.screens.QrScannerScreen
 import com.example.ui.screens.SettingsScreen
@@ -219,6 +220,7 @@ class MainActivity : ComponentActivity() {
                     state.activeWorkspaceApp == null &&
                     state.previewState == null &&
                     !state.showAccountCenter &&
+                    !state.showManageAccounts &&
                     !state.showSettings
 
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -320,6 +322,18 @@ class MainActivity : ComponentActivity() {
                                     viewModel.changeAccountPassword(oldPwd, newPwd)
                                 },
                                 onLogout = { viewModel.logoutAccount(activeAccount) }
+                            )
+                        }
+
+                        state.showManageAccounts -> {
+                            ManageAccountsScreen(
+                                state = state,
+                                imageLoader = imageLoader,
+                                onBack = { viewModel.openManageAccounts(false) },
+                                onSwitchAccount = { viewModel.switchAccount(it) },
+                                onDeleteAccount = { viewModel.logoutAccount(it) },
+                                onAddAccount = { viewModel.openAddAccountLogin() },
+                                onOpenQrScanner = { viewModel.openQrScanner(true) }
                             )
                         }
 

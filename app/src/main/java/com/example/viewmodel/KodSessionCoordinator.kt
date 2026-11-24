@@ -522,6 +522,7 @@ internal class KodSessionCoordinator(
                 showAddAccountLogin = true,
                 showSettings = false,
                 showAccountCenter = false,
+                showManageAccounts = false,
                 loginForm = LoginFormState()
             )
         }
@@ -540,6 +541,8 @@ internal class KodSessionCoordinator(
                 it.copy(
                     showAddAccountLogin = false,
                     showSettings = false,
+                    showAccountCenter = false,
+                    showManageAccounts = false,
                     sessionExpiredNotice = null,
                     selectedPaths = emptySet(),
                     previewState = null
@@ -551,18 +554,25 @@ internal class KodSessionCoordinator(
 
     fun logoutAccount(account: KodAccount) {
         scope.launch {
+            val isRemovingActive = uiState.value.activeAccount?.id == account.id
+            val remainingCount = uiState.value.accounts.count { it.id != account.id }
             authRepository.removeAccount(account.id)
             fileRepository.invalidateAccount(account.id)
-            uiState.update {
-                it.copy(
-                    showSettings = false,
-                    showAccountCenter = false,
-                    sessionExpiredNotice = null,
-                    selectedPaths = emptySet(),
-                    files = emptyList(),
-                    shares = emptyList(),
-                    mediaItems = emptyList()
-                )
+            uiState.update { state ->
+                if (isRemovingActive) {
+                    state.copy(
+                        showSettings = false,
+                        showAccountCenter = false,
+                        showManageAccounts = if (remainingCount == 0) false else state.showManageAccounts,
+                        sessionExpiredNotice = null,
+                        selectedPaths = emptySet(),
+                        files = emptyList(),
+                        shares = emptyList(),
+                        mediaItems = emptyList()
+                    )
+                } else {
+                    state
+                }
             }
             emitMessage("已移除账号 ${account.displayName}")
         }
@@ -617,6 +627,7 @@ internal class KodSessionCoordinator(
                     previewState = null,
                     showSettings = false,
                     showAccountCenter = false,
+                    showManageAccounts = false,
                     showSharedScreen = false,
                     showSyncScreen = false,
                     actionSheetItem = null,
@@ -633,6 +644,7 @@ internal class KodSessionCoordinator(
                 previewState = null,
                 showSettings = false,
                 showAccountCenter = false,
+                showManageAccounts = false,
                 showSharedScreen = false,
                 showSyncScreen = false,
                 actionSheetItem = null,
@@ -836,6 +848,15 @@ internal class KodSessionCoordinator(
     fun openAccountCenter(open: Boolean) {
         uiState.update { it.copy(showAccountCenter = open) }
         if (open) loadAccountCenterData()
+    }
+
+    fun openManageAccounts(open: Boolean) {
+        uiState.update {
+            it.copy(
+                showManageAccounts = open,
+                showAccountCenter = if (open) false else it.showAccountCenter
+            )
+        }
     }
 
     fun loadAccountCenterData() {

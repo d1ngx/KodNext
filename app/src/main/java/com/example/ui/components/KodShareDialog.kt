@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,8 +37,8 @@ import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
@@ -74,6 +76,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.data.KodFormatters
 import com.example.model.KodCollabAssignment
 import com.example.model.KodCollabAuthRole
@@ -222,239 +226,230 @@ fun KodShareConfigDialog(
         }
     }
 
-    AlertDialog(
+    val canCancelExternalLink = onCancelShare != null && (
+        createdShare != null ||
+            isEditingExisting ||
+            existingDetail?.isLink == true ||
+            (isItemAlreadyShared && !isLoadingDetail && existingDetail?.isShareTo != true)
+        )
+    val canCancelCollab = onCancelShare != null && existingDetail?.isShareTo == true
+
+    Dialog(
         onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                imageVector = if (activeTab == ShareDialogTab.INTERNAL_COLLAB) Icons.Filled.GroupAdd else Icons.Filled.Share,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary
-            )
-        },
-        title = {
-            Text(
-                when {
-                    isEditingExisting -> "编辑外链分享权限"
-                    allowInternalCollab -> "共享与协作"
-                    else -> "网盘外链分享"
-                }
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 460.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "${if (isFolder) "文件夹" else "文件"} · $titleName",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                AnimatedVisibility(visible = !inlineFeedbackMessage.isNullOrBlank()) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        shape = RoundedCornerShape(10.dp),
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            shadowElevation = 12.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 24.dp)
+                .widthIn(max = 520.dp)
+                .heightIn(max = 680.dp)
+                .testTag("kod_share_config_dialog")
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // Fixed Dialog Header with explicit top-right Close (×) button
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 8.dp, top = 16.dp, bottom = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("share_dialog_inline_feedback")
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primaryContainer),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.CheckCircle,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text(
-                                text = inlineFeedbackMessage.orEmpty(),
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
-                }
-
-                if (allowInternalCollab && createdShare == null) {
-                    SingleChoiceSegmentedButtonRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("share_mode_segmented_row")
-                    ) {
-                        ShareDialogTab.entries.forEachIndexed { idx, tab ->
-                            SegmentedButton(
-                                selected = activeTab == tab,
-                                onClick = {
-                                    activeTab = tab
-                                    onSelectTab?.invoke(tab)
-                                },
-                                shape = SegmentedButtonDefaults.itemShape(idx, ShareDialogTab.entries.size),
-                                icon = {},
-                                modifier = Modifier.testTag("share_dialog_tab_${tab.name.lowercase()}")
-                            ) {
-                                Text(
-                                    text = tab.label,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    }
-                }
-
-                if (activeTab == ShareDialogTab.EXTERNAL_LINK || !allowInternalCollab) {
-                    if (createdShare != null) {
-                        ShareReadyLinkCard(
-                            share = createdShare,
-                            isCopied = inlineFeedbackMessage != null,
-                            onCopyUrl = ::copyWithInlineFeedback
+                        Icon(
+                            imageVector = if (activeTab == ShareDialogTab.INTERNAL_COLLAB) Icons.Filled.GroupAdd else Icons.Filled.Share,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
                         )
-                        if (onCancelShare != null) {
-                            OutlinedButton(
-                                enabled = !isWorking,
-                                onClick = { pendingCancelMode = ShareCancelMode.EXTERNAL_LINK_ONLY },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("cancel_created_share_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.LinkOff,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "取消此分享链接",
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-                        }
-                    } else {
-                        if (isLoadingDetail) {
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = when {
+                                isEditingExisting -> "编辑外链分享权限"
+                                allowInternalCollab -> "共享与协作"
+                                else -> "网盘外链分享"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${if (isFolder) "文件夹" else "文件"} · $titleName",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.testTag("close_share_dialog_icon")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "关闭窗口",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+
+                // Scrollable middle form content
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    AnimatedVisibility(visible = !inlineFeedbackMessage.isNullOrBlank()) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("share_dialog_inline_feedback")
+                        ) {
                             Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Icon(
+                                    imageVector = Icons.Filled.CheckCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
                                 Text(
-                                    "正在读取现有分享状态…",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    text = inlineFeedbackMessage.orEmpty(),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    fontWeight = FontWeight.SemiBold
                                 )
                             }
                         }
+                    }
 
-                        val canCancelExternalLink = onCancelShare != null && (
-                            isEditingExisting ||
-                                existingDetail?.isLink == true ||
-                                (isItemAlreadyShared && !isLoadingDetail && existingDetail?.isShareTo != true)
+                    if (allowInternalCollab && createdShare == null) {
+                        SingleChoiceSegmentedButtonRow(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("share_mode_segmented_row")
+                        ) {
+                            ShareDialogTab.entries.forEachIndexed { idx, tab ->
+                                SegmentedButton(
+                                    selected = activeTab == tab,
+                                    onClick = {
+                                        activeTab = tab
+                                        onSelectTab?.invoke(tab)
+                                    },
+                                    shape = SegmentedButtonDefaults.itemShape(idx, ShareDialogTab.entries.size),
+                                    icon = {},
+                                    modifier = Modifier.testTag("share_dialog_tab_${tab.name.lowercase()}")
+                                ) {
+                                    Text(
+                                        text = tab.label,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (activeTab == ShareDialogTab.EXTERNAL_LINK || !allowInternalCollab) {
+                        if (createdShare != null) {
+                            ShareReadyLinkCard(
+                                share = createdShare,
+                                isCopied = inlineFeedbackMessage != null,
+                                onCopyUrl = ::copyWithInlineFeedback
                             )
-                        val activeExternalUrl = existingDetail?.shareUrl.orEmpty()
-                        if (canCancelExternalLink || (existingDetail?.isLink == true && activeExternalUrl.isNotBlank())) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        } else {
+                            if (isLoadingDetail) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    Text(
+                                        "正在读取现有分享状态…",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            val activeExternalUrl = existingDetail?.shareUrl.orEmpty()
+                            if (existingDetail?.isLink == true && activeExternalUrl.isNotBlank()) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Filled.Link,
                                             contentDescription = null,
                                             tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(16.dp)
+                                            modifier = Modifier.size(18.dp)
                                         )
-                                        Text(
-                                            text = "外链分享已开启",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
-                                    }
-                                    if (activeExternalUrl.isNotBlank()) {
-                                        Text(
-                                            text = activeExternalUrl,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontFamily = JetBrainsMonoFamily,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        if (activeExternalUrl.isNotBlank()) {
-                                            OutlinedButton(
-                                                onClick = {
-                                                    val pwd = existingDetail?.password.orEmpty()
-                                                    val payload = if (pwd.isNotBlank()) {
-                                                        "分享链接: $activeExternalUrl\n提取码: $pwd"
-                                                    } else {
-                                                        activeExternalUrl
-                                                    }
-                                                    copyWithInlineFeedback(payload)
-                                                },
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .testTag("copy_existing_share_button")
-                                            ) {
-                                                Icon(
-                                                    imageVector = if (inlineFeedbackMessage != null) Icons.Filled.Check else Icons.Filled.ContentCopy,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(15.dp)
-                                                )
-                                                Spacer(modifier = Modifier.width(4.dp))
-                                                Text(
-                                                    text = if (inlineFeedbackMessage != null) "已复制" else "复制链接",
-                                                    maxLines = 1
-                                                )
-                                            }
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "外链分享已开启",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                            Text(
+                                                text = activeExternalUrl,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontFamily = JetBrainsMonoFamily,
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
                                         }
-                                        if (canCancelExternalLink) {
-                                            OutlinedButton(
-                                                enabled = !isWorking,
-                                                onClick = { pendingCancelMode = ShareCancelMode.EXTERNAL_LINK_ONLY },
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .testTag("cancel_external_share_button")
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Filled.LinkOff,
-                                                    contentDescription = null,
-                                                    tint = MaterialTheme.colorScheme.error,
-                                                    modifier = Modifier.size(15.dp)
-                                                )
-                                                Spacer(modifier = Modifier.width(4.dp))
-                                                Text(
-                                                    text = "停用外链",
-                                                    color = MaterialTheme.colorScheme.error,
-                                                    maxLines = 1
-                                                )
-                                            }
+                                        IconButton(
+                                            onClick = {
+                                                val pwd = existingDetail.password
+                                                val payload = if (pwd.isNotBlank()) {
+                                                    "分享链接: $activeExternalUrl\n提取码: $pwd"
+                                                } else {
+                                                    activeExternalUrl
+                                                }
+                                                copyWithInlineFeedback(payload)
+                                            },
+                                            modifier = Modifier.testTag("copy_existing_share_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = if (inlineFeedbackMessage != null) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                                                contentDescription = "复制现有外链",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
                                         }
                                     }
                                 }
                             }
-                        }
 
                         // Password Protection section
                         Row(
@@ -572,17 +567,23 @@ fun KodShareConfigDialog(
                             )
                         }
                     }
-                    if (onCancelShare != null && existingDetail?.isShareTo == true) {
+                    if (existingDetail?.isShareTo == true) {
                         Surface(
                             color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
+                                Icon(
+                                    imageVector = Icons.Filled.GroupAdd,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
                                 Text(
                                     text = "已开启内部协作 (${existingDetail.assignments.size} 个对象)",
                                     style = MaterialTheme.typography.labelMedium,
@@ -590,20 +591,6 @@ fun KodShareConfigDialog(
                                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                                     modifier = Modifier.weight(1f)
                                 )
-                                TextButton(
-                                    enabled = !isWorking,
-                                    onClick = { pendingCancelMode = ShareCancelMode.INTERNAL_COLLAB_ONLY },
-                                    modifier = Modifier.testTag("cancel_collab_share_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.LinkOff,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(15.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("停用协作", color = MaterialTheme.colorScheme.error)
-                                }
                             }
                         }
                     }
@@ -863,69 +850,180 @@ fun KodShareConfigDialog(
                             }
                         }
                     }
-                }
-            }
-        },
-        confirmButton = {
-            if (activeTab == ShareDialogTab.INTERNAL_COLLAB && allowInternalCollab) {
-                Button(
-                    enabled = !isWorking && selectedAssignments.isNotEmpty(),
-                    onClick = { onSaveInternalCollab(selectedAssignments) },
-                    modifier = Modifier.testTag("confirm_save_collab_button")
-                ) {
-                    if (isWorking) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("保存协作 (${selectedAssignments.size})")
                     }
                 }
-            } else if (createdShare == null) {
-                Button(
-                    enabled = !isWorking,
-                    onClick = {
-                        val finalPassword = if (passwordEnabled) password.trim() else ""
-                        onSaveShare(finalPassword, resolvedExpireEpochSec, accessMode)
-                    },
-                    modifier = Modifier.testTag("confirm_create_share_button")
+
+                // Pinned Floating Bottom Action Bar (always visible without scrolling)
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    tonalElevation = 4.dp,
+                    shadowElevation = 6.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("share_dialog_floating_bottom_bar")
                 ) {
-                    if (isWorking) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text(
-                            when {
-                                isEditingExisting -> "保存修改"
-                                existingDetail?.isLink == true -> "更新外链设置"
-                                else -> "生成外链"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (activeTab == ShareDialogTab.INTERNAL_COLLAB && allowInternalCollab) {
+                            if (canCancelCollab) {
+                                OutlinedButton(
+                                    enabled = !isWorking,
+                                    onClick = { pendingCancelMode = ShareCancelMode.INTERNAL_COLLAB_ONLY },
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.7f)),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("cancel_collab_share_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.LinkOff,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("取消协作", maxLines = 1, softWrap = false)
+                                }
+                            } else {
+                                OutlinedButton(
+                                    onClick = onDismiss,
+                                    modifier = Modifier
+                                        .weight(0.85f)
+                                        .testTag("close_share_dialog_button")
+                                ) {
+                                    Text("关闭", maxLines = 1, softWrap = false)
+                                }
                             }
-                        )
+                            Button(
+                                enabled = !isWorking && selectedAssignments.isNotEmpty(),
+                                onClick = { onSaveInternalCollab(selectedAssignments) },
+                                modifier = Modifier
+                                    .weight(1.15f)
+                                    .testTag("confirm_save_collab_button")
+                            ) {
+                                if (isWorking) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                } else {
+                                    Text("保存协作 (${selectedAssignments.size})", maxLines = 1, softWrap = false)
+                                }
+                            }
+                        } else if (createdShare != null) {
+                            if (canCancelExternalLink) {
+                                OutlinedButton(
+                                    enabled = !isWorking,
+                                    onClick = { pendingCancelMode = ShareCancelMode.EXTERNAL_LINK_ONLY },
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.7f)),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("cancel_created_share_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.LinkOff,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("取消外链", maxLines = 1, softWrap = false)
+                                }
+                            }
+                            Button(
+                                onClick = onDismiss,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("close_share_dialog_button")
+                            ) {
+                                Text("完成", maxLines = 1, softWrap = false)
+                            }
+                        } else {
+                            if (canCancelExternalLink) {
+                                OutlinedButton(
+                                    enabled = !isWorking,
+                                    onClick = { pendingCancelMode = ShareCancelMode.EXTERNAL_LINK_ONLY },
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.7f)),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("cancel_external_share_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.LinkOff,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("取消外链", maxLines = 1, softWrap = false)
+                                }
+                            } else {
+                                OutlinedButton(
+                                    onClick = onDismiss,
+                                    modifier = Modifier
+                                        .weight(0.85f)
+                                        .testTag("close_share_dialog_button")
+                                ) {
+                                    Text("关闭", maxLines = 1, softWrap = false)
+                                }
+                            }
+                            Button(
+                                enabled = !isWorking,
+                                onClick = {
+                                    val finalPassword = if (passwordEnabled) password.trim() else ""
+                                    onSaveShare(finalPassword, resolvedExpireEpochSec, accessMode)
+                                },
+                                modifier = Modifier
+                                    .weight(1.15f)
+                                    .testTag("confirm_create_share_button")
+                            ) {
+                                if (isWorking) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                } else {
+                                    Text(
+                                        text = when {
+                                            isEditingExisting -> "保存修改"
+                                            existingDetail?.isLink == true -> "更新外链"
+                                            else -> "生成外链"
+                                        },
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                            }
+                        }
                     }
-                }
-            } else {
-                TextButton(onClick = onDismiss) { Text("完成") }
-            }
-        },
-        dismissButton = {
-            if (createdShare == null || activeTab == ShareDialogTab.INTERNAL_COLLAB) {
-                TextButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.testTag("close_share_dialog_button")
-                ) {
-                    Text("关闭")
                 }
             }
         }
-    )
+    }
 
     pendingCancelMode?.let { mode ->
         val isCollabCancel = mode == ShareCancelMode.INTERNAL_COLLAB_ONLY
         ConfirmDangerDialog(
-            title = if (isCollabCancel) "确认停用内部协作？" else "确认停用外链分享？",
+            title = if (isCollabCancel) "确认取消内部协作？" else "确认取消外链分享？",
             message = if (isCollabCancel) {
-                "停用后，已添加的协作成员和部门将无法继续访问「$titleName」。"
+                "取消后，已添加的协作成员和部门将无法继续访问「$titleName」。"
             } else {
-                "停用后，「$titleName」的外链将立即失效，外部访问者将无法打开。"
+                "取消后，「$titleName」的外链将立即失效，外部访问者将无法打开。"
             },
-            confirmLabel = if (isCollabCancel) "停用协作" else "停用外链",
+            confirmLabel = if (isCollabCancel) "确认取消协作" else "确认取消外链",
             dismissLabel = "返回",
             onConfirm = {
                 pendingCancelMode = null

@@ -879,6 +879,7 @@ fun MainWorkspaceScreen(
                             imageLoader = imageLoader,
                             onOpenSettings = { viewModel.openSettings(true) },
                             onOpenAccountCenter = { viewModel.openAccountCenter(true) },
+                            onOpenManageAccounts = { viewModel.openManageAccounts(true) },
                             onOpenSyncScreen = { viewModel.openSyncScreen() },
                             onOpenWebAdmin = { viewModel.openWebAdminPortal() },
                             onOpenWebPortal = { viewModel.openWebDrivePortal() },
@@ -902,7 +903,8 @@ fun MainWorkspaceScreen(
             onDismiss = { showAccountSwitcher = false },
             onOpenQrScanner = { viewModel.openQrScanner(true) },
             onSwitchAccount = { viewModel.switchAccount(it) },
-            onAddAccount = { viewModel.openAddAccountLogin() }
+            onAddAccount = { viewModel.openAddAccountLogin() },
+            onManageAccounts = { viewModel.openManageAccounts(true) }
         )
     }
 

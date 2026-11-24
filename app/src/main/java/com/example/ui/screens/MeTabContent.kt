@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tune
@@ -77,6 +78,7 @@ fun MeTabContent(
     imageLoader: ImageLoader,
     onOpenSettings: () -> Unit,
     onOpenAccountCenter: () -> Unit,
+    onOpenManageAccounts: () -> Unit,
     onOpenSyncScreen: () -> Unit,
     onOpenWebAdmin: () -> Unit,
     onOpenWebPortal: () -> Unit,
@@ -241,6 +243,18 @@ fun MeTabContent(
                 .padding(horizontal = 16.dp, vertical = 6.dp)
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
+                MeActionRow(
+                    icon = Icons.Filled.ManageAccounts,
+                    iconTint = Color(0xFF0074C8),
+                    title = "管理账号",
+                    trailingText = "${state.accounts.size} 个账号",
+                    onClick = onOpenManageAccounts,
+                    tag = "me_row_manage_accounts"
+                )
+                HorizontalDivider(
+                    modifier = Modifier.padding(start = 56.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
                 val activeSyncCount = state.syncRules.count { it.enabled }
                 MeActionRow(
                     icon = Icons.Filled.CloudUpload,

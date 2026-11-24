@@ -311,6 +311,7 @@ class KodViewModel(application: Application) : AndroidViewModel(application) {
     fun openWebDrivePortal() = sessionCoordinator.openWebDrivePortal()
     fun openWebAccountPortal() = sessionCoordinator.openWebAccountPortal()
     fun openAccountCenter(open: Boolean) = sessionCoordinator.openAccountCenter(open)
+    fun openManageAccounts(open: Boolean) = sessionCoordinator.openManageAccounts(open)
     fun loadAccountCenterData() = sessionCoordinator.loadAccountCenterData()
     fun updateAccountProfile(nickName: String, email: String, phone: String, sex: String) =
         sessionCoordinator.updateAccountProfile(nickName, email, phone, sex)

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.filled.PersonAddAlt1
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Shield
@@ -48,7 +49,8 @@ fun AccountSwitcherDialog(
     onDismiss: () -> Unit,
     onOpenQrScanner: () -> Unit,
     onSwitchAccount: (KodAccount) -> Unit,
-    onAddAccount: () -> Unit
+    onAddAccount: () -> Unit,
+    onManageAccounts: () -> Unit = {}
 ) {
     TrackModalOverlay()
     Dialog(onDismissRequest = onDismiss) {
@@ -216,6 +218,15 @@ fun AccountSwitcherDialog(
 
                 // Bottom actions: strictly Add Account & Scan QR to Add Account
                 Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                    AccountPopoverRow(
+                        icon = Icons.Filled.ManageAccounts,
+                        label = "管理账号",
+                        onClick = {
+                            onDismiss()
+                            onManageAccounts()
+                        },
+                        testTag = "popover_manage_accounts"
+                    )
                     AccountPopoverRow(
                         icon = Icons.Filled.PersonAddAlt1,
                         label = "添加新网盘账号",

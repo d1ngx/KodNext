@@ -172,8 +172,9 @@ data class KodUiState(
     val pickedSyncRemote: SyncRemoteSelection? = null,
     val transfers: List<TransferTask> = emptyList(),
 
-    // Account Center
+    // Account Center & Manage Accounts
     val showAccountCenter: Boolean = false,
+    val showManageAccounts: Boolean = false,
     val isLoadingAccountCenter: Boolean = false,
     val userDevices: List<KodUserDeviceItem> = emptyList(),
     val userLogs: List<KodUserLogItem> = emptyList(),

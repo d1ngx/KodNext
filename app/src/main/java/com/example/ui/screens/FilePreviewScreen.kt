@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -8,6 +11,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
@@ -16,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -25,6 +31,8 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Share
@@ -39,11 +47,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -57,9 +67,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import coil.ImageLoader
 import coil.compose.AsyncImage
 import com.example.data.KodBoxApiClient
@@ -119,7 +132,32 @@ fun FilePreviewScreen(
         item.isImage || item.isEditableText -> preferPluginMode && selectedPlugin != null
         else -> selectedPlugin != null
     }
+    val shouldAutoFullscreen = shouldAutoEnterFullscreenPreview(
+        item = item,
+        usePluginViewer = usePluginViewer
+    )
+    var isFullscreen by remember(item.path, shouldAutoFullscreen) {
+        mutableStateOf(shouldAutoFullscreen)
+    }
+    val supportsManualFullscreen = usePluginViewer || item.isImage || (item.isEditableText && !preview.isEditingText)
+    val effectiveFullscreen = isFullscreen && !preview.isEditingText
     val isDarkCanvas = (item.isImage && !usePluginViewer) || item.isVideo
+
+    val view = LocalView.current
+    DisposableEffect(view, effectiveFullscreen) {
+        val window = view.context.findHostingActivity()?.window
+        val controller = window?.let { WindowInsetsControllerCompat(it, view) }
+        if (effectiveFullscreen) {
+            controller?.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller?.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose {
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
 
     val mediaOkHttpClient = remember(account.id, account.cookiesHeader, account.csrfToken) {
         apiClient.createAuthenticatedMediaClient(account)
@@ -130,8 +168,10 @@ fun FilePreviewScreen(
 
     Scaffold(
         containerColor = if (isDarkCanvas) Color(0xFF0A0F16) else MaterialTheme.colorScheme.background,
+        contentWindowInsets = if (effectiveFullscreen) WindowInsets(0, 0, 0, 0) else ScaffoldDefaults.contentWindowInsets,
         topBar = {
-            TopAppBar(
+            if (!effectiveFullscreen) {
+                TopAppBar(
                 title = {
                     Column {
                         Text(
@@ -208,6 +248,14 @@ fun FilePreviewScreen(
                             }
                         }
                     }
+                    if (supportsManualFullscreen) {
+                        IconButton(
+                            onClick = { isFullscreen = true },
+                            modifier = Modifier.testTag("preview_enter_fullscreen_button")
+                        ) {
+                            Icon(Icons.Filled.Fullscreen, contentDescription = "进入全屏")
+                        }
+                    }
                     IconButton(onClick = onToggleFavorite) {
                         Icon(
                             imageVector = if (item.isFav) Icons.Filled.Star else Icons.Filled.StarBorder,
@@ -235,13 +283,14 @@ fun FilePreviewScreen(
                     )
                 }
             )
+            }
         }
     ) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .navigationBarsPadding()
+                .then(if (effectiveFullscreen) Modifier else Modifier.navigationBarsPadding())
                 .imePadding()
         ) {
             when {
@@ -257,7 +306,8 @@ fun FilePreviewScreen(
                         onSelectPlugin = { selectedPluginName = it.name },
                         onDownloadFallback = onDownload,
                         onSessionExpired = onSessionExpired,
-                        onReloginClick = onReloginClick
+                        onReloginClick = onReloginClick,
+                        showPluginBar = !effectiveFullscreen
                     )
                 }
 
@@ -421,6 +471,65 @@ fun FilePreviewScreen(
                     }
                 }
             }
+
+            if (effectiveFullscreen) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.56f),
+                    contentColor = Color.White,
+                    shadowElevation = 4.dp,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .displayCutoutPadding()
+                        .padding(top = 12.dp, end = 12.dp)
+                        .testTag("preview_fullscreen_controls")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    ) {
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier.testTag("preview_fullscreen_back_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "返回文件列表",
+                                tint = Color.White
+                            )
+                        }
+                        IconButton(
+                            onClick = { isFullscreen = false },
+                            modifier = Modifier.testTag("preview_exit_fullscreen_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.FullscreenExit,
+                                contentDescription = "退出全屏并显示工具栏",
+                                tint = Color.White
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
+}
+
+internal fun shouldAutoEnterFullscreenPreview(
+    item: com.example.model.KodFileItem,
+    usePluginViewer: Boolean
+): Boolean {
+    if (!usePluginViewer) return false
+    return item.isPdf ||
+        item.isOfficeDocument ||
+        item.isCadOr3d ||
+        item.isEbook ||
+        item.isDiagramOrMindMap
+}
+
+private tailrec fun Context.findHostingActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findHostingActivity()
+    else -> null
 }

@@ -237,6 +237,11 @@ internal object DirectoryCacheCodec {
                     put("ext", item.ext)
                     put("isFav", item.isFav)
                     put("isShare", item.isShare)
+                    put("isLinkShare", item.isLinkShare)
+                    put("isCollabShare", item.isCollabShare)
+                    put("shareId", item.shareId)
+                    put("shareOwnerUserId", item.shareOwnerUserId)
+                    put("shareOwnerName", item.shareOwnerName)
                     put("tags", tagsArr)
                     put("fileThumb", item.fileThumb)
                     put("hashMd5", item.hashMd5)
@@ -306,6 +311,11 @@ internal object DirectoryCacheCodec {
                         ext = obj.optString("ext"),
                         isFav = obj.optBoolean("isFav", false),
                         isShare = obj.optBoolean("isShare", false),
+                        isLinkShare = obj.optBoolean("isLinkShare", false),
+                        isCollabShare = obj.optBoolean("isCollabShare", false),
+                        shareId = obj.optString("shareId"),
+                        shareOwnerUserId = obj.optString("shareOwnerUserId"),
+                        shareOwnerName = obj.optString("shareOwnerName"),
                         tags = itemTags,
                         fileThumb = obj.optString("fileThumb"),
                         hashMd5 = obj.optString("hashMd5"),

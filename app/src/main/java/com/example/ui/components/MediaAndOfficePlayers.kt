@@ -591,6 +591,7 @@ fun KodPluginWebViewPreview(
     onDownloadFallback: () -> Unit,
     onSessionExpired: (String) -> Unit = {},
     onReloginClick: () -> Unit = {},
+    showPluginBar: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     var loadProgress by remember(pluginUrl) { mutableIntStateOf(0) }
@@ -631,41 +632,43 @@ fun KodPluginWebViewPreview(
             .testTag("office_plugin_webview_container")
     ) {
         // Horizontal scrollable plugin switcher strip (OnlyOffice / CAD / EPUB / Drawio / MindMap / Refresh)
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+        if (showPluginBar) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                LazyRow(
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(availablePlugins, key = { it.name }) { plugin ->
-                        FilterChip(
-                            selected = plugin.name.equals(selectedPlugin.name, ignoreCase = true),
-                            onClick = { onSelectPlugin(plugin) },
-                            label = { Text(plugin.title, maxLines = 1) },
-                            modifier = Modifier.testTag("plugin_chip_${plugin.name.lowercase()}")
-                        )
+                    LazyRow(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        items(availablePlugins, key = { it.name }) { plugin ->
+                            FilterChip(
+                                selected = plugin.name.equals(selectedPlugin.name, ignoreCase = true),
+                                onClick = { onSelectPlugin(plugin) },
+                                label = { Text(plugin.title, maxLines = 1) },
+                                modifier = Modifier.testTag("plugin_chip_${plugin.name.lowercase()}")
+                            )
+                        }
                     }
-                }
-                IconButton(
-                    onClick = {
-                        webError = null
-                        interceptedSpaUrl = null
-                        interceptedLoginRedirect = false
-                        reloadNonce += 1
-                    },
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "刷新插件视图")
+                    IconButton(
+                        onClick = {
+                            webError = null
+                            interceptedSpaUrl = null
+                            interceptedLoginRedirect = false
+                            reloadNonce += 1
+                        },
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "刷新插件视图")
+                    }
                 }
             }
         }

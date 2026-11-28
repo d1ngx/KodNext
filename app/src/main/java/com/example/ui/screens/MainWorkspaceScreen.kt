@@ -970,6 +970,9 @@ fun MainWorkspaceScreen(
             initialTab = state.shareDialogInitialTab,
             allowInternalCollab = true,
             isItemAlreadyShared = item.isShare,
+            shareOwnerUserId = item.shareOwnerUserId,
+            shareOwnerName = item.shareOwnerName,
+            currentUserId = state.activeAccount?.userId.orEmpty(),
             existingDetail = state.shareExistingDetail,
             isLoadingDetail = state.isLoadingShareDetail,
             authRoles = state.collabAuthRoles,
@@ -990,7 +993,8 @@ fun MainWorkspaceScreen(
             },
             onCancelShare = { cancelMode ->
                 val sid = state.createdShareResult?.shareId?.ifBlank { null }
-                    ?: state.shareExistingDetail?.shareId.orEmpty()
+                    ?: state.shareExistingDetail?.shareId?.ifBlank { null }
+                    ?: item.shareId
                 viewModel.cancelShare(
                     shareId = sid,
                     path = item.path,

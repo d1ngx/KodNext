@@ -32,7 +32,7 @@ class FileRepository(
     private val directoryCacheDao: DirectoryCacheDao
 ) {
     private fun sortKey(sortField: SortField, sortOrder: SortOrder): String =
-        "v2_${sortField.apiKey}_${sortOrder.apiKey}"
+        "v3_${sortField.apiKey}_${sortOrder.apiKey}"
 
     private fun normalizeDepartmentFlagsIfContainer(path: String, result: PathListResult): PathListResult {
         val isConcreteDir = KodBoxApiClient.isConcreteSourcePath(path) ||

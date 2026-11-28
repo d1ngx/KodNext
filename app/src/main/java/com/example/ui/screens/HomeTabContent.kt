@@ -258,8 +258,15 @@ fun HomeTabContent(
                 }
 
                 val favPreview = state.homeFavorites.take(5)
-                val sharedKeys = buildSet {
-                    (state.shares + state.collabShares).forEach { s ->
+                val linkSharedKeys = buildSet {
+                    state.shares.forEach { s ->
+                        if (s.sourceId.isNotBlank()) add("id:${s.sourceId}")
+                        val p = s.path.trim().trimEnd('/')
+                        if (p.isNotBlank()) add("path:$p")
+                    }
+                }
+                val collabSharedKeys = buildSet {
+                    state.collabShares.forEach { s ->
                         if (s.sourceId.isNotBlank()) add("id:${s.sourceId}")
                         val p = s.path.trim().trimEnd('/')
                         if (p.isNotBlank()) add("path:$p")
@@ -276,10 +283,20 @@ fun HomeTabContent(
                         items = favPreview,
                         key = { _, item -> "fav_${item.path}" }
                     ) { idx, rawItem ->
-                        val isKnownShared = rawItem.isShare ||
-                            (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in sharedKeys) ||
-                            ("path:${rawItem.path.trim().trimEnd('/')}" in sharedKeys)
-                        val item = rawItem.copy(isFav = true, isShare = isKnownShared)
+                        val normPathKey = "path:${rawItem.path.trim().trimEnd('/')}"
+                        val isKnownLink = rawItem.isLinkShare ||
+                            (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in linkSharedKeys) ||
+                            (normPathKey in linkSharedKeys)
+                        val isKnownCollab = rawItem.isCollabShare ||
+                            (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in collabSharedKeys) ||
+                            (normPathKey in collabSharedKeys)
+                        val isKnownShared = rawItem.isShare || isKnownLink || isKnownCollab
+                        val item = rawItem.copy(
+                            isFav = true,
+                            isShare = isKnownShared,
+                            isLinkShare = isKnownLink,
+                            isCollabShare = isKnownCollab
+                        )
                         Surface(
                             color = MaterialTheme.colorScheme.surface,
                             modifier = Modifier.fillMaxWidth()
@@ -329,10 +346,25 @@ fun HomeTabContent(
                         items = recentPreview,
                         key = { _, item -> "recent_${item.path}" }
                     ) { idx, rawItem ->
-                        val isKnownShared = rawItem.isShare ||
-                            (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in sharedKeys) ||
-                            ("path:${rawItem.path.trim().trimEnd('/')}" in sharedKeys)
-                        val item = if (isKnownShared && !rawItem.isShare) rawItem.copy(isShare = true) else rawItem
+                        val normPathKey = "path:${rawItem.path.trim().trimEnd('/')}"
+                        val isKnownLink = rawItem.isLinkShare ||
+                            (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in linkSharedKeys) ||
+                            (normPathKey in linkSharedKeys)
+                        val isKnownCollab = rawItem.isCollabShare ||
+                            (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in collabSharedKeys) ||
+                            (normPathKey in collabSharedKeys)
+                        val isKnownShared = rawItem.isShare || isKnownLink || isKnownCollab
+                        val item = if (
+                            isKnownShared != rawItem.isShare ||
+                            isKnownLink != rawItem.isLinkShare ||
+                            isKnownCollab != rawItem.isCollabShare
+                        ) {
+                            rawItem.copy(
+                                isShare = isKnownShared,
+                                isLinkShare = isKnownLink,
+                                isCollabShare = isKnownCollab
+                            )
+                        } else rawItem
                         Surface(
                             color = MaterialTheme.colorScheme.surface,
                             modifier = Modifier.fillMaxWidth()

@@ -470,9 +470,18 @@ fun FilesTabContent(
                 state.preferences.viewMode == ViewMode.LIST -> {
                     val readmeItem = state.directoryReadmeItem
                     val showInlineReadme = readmeItem != null && !state.isSearchActive && !state.searchFilter.hasActiveFilters
-                    val sharedKeys = remember(state.shares, state.collabShares) {
+                    val linkSharedKeys = remember(state.shares) {
                         buildSet {
-                            (state.shares + state.collabShares).forEach { s ->
+                            state.shares.forEach { s ->
+                                if (s.sourceId.isNotBlank()) add("id:${s.sourceId}")
+                                val p = s.path.trim().trimEnd('/')
+                                if (p.isNotBlank()) add("path:$p")
+                            }
+                        }
+                    }
+                    val collabSharedKeys = remember(state.collabShares) {
+                        buildSet {
+                            state.collabShares.forEach { s ->
                                 if (s.sourceId.isNotBlank()) add("id:${s.sourceId}")
                                 val p = s.path.trim().trimEnd('/')
                                 if (p.isNotBlank()) add("path:$p")
@@ -503,10 +512,25 @@ fun FilesTabContent(
                         val isRecycleSpace = state.activeSpace == KodSpace.RECYCLE_BIN
                         items(state.files, key = { it.path }) { rawItem ->
                             val isRecycleEntry = isRecycleSpace || rawItem.isRecycleItem
-                            val isKnownShared = rawItem.isShare ||
-                                (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in sharedKeys) ||
-                                ("path:${rawItem.path.trim().trimEnd('/')}" in sharedKeys)
-                            val item = if (isKnownShared && !rawItem.isShare) rawItem.copy(isShare = true) else rawItem
+                            val normPathKey = "path:${rawItem.path.trim().trimEnd('/')}"
+                            val isKnownLink = rawItem.isLinkShare ||
+                                (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in linkSharedKeys) ||
+                                (normPathKey in linkSharedKeys)
+                            val isKnownCollab = rawItem.isCollabShare ||
+                                (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in collabSharedKeys) ||
+                                (normPathKey in collabSharedKeys)
+                            val isKnownShared = rawItem.isShare || isKnownLink || isKnownCollab
+                            val item = if (
+                                isKnownShared != rawItem.isShare ||
+                                isKnownLink != rawItem.isLinkShare ||
+                                isKnownCollab != rawItem.isCollabShare
+                            ) {
+                                rawItem.copy(
+                                    isShare = isKnownShared,
+                                    isLinkShare = isKnownLink,
+                                    isCollabShare = isKnownCollab
+                                )
+                            } else rawItem
                             val allowShareButton = !isRecycleEntry && !isTopLevelSpecialSpace && item.canShare
                             NextcloudFileListItem(
                                 item = item,
@@ -533,9 +557,18 @@ fun FilesTabContent(
                 else -> {
                     val readmeItem = state.directoryReadmeItem
                     val showInlineReadme = readmeItem != null && !state.isSearchActive && !state.searchFilter.hasActiveFilters
-                    val sharedKeys = remember(state.shares, state.collabShares) {
+                    val linkSharedKeys = remember(state.shares) {
                         buildSet {
-                            (state.shares + state.collabShares).forEach { s ->
+                            state.shares.forEach { s ->
+                                if (s.sourceId.isNotBlank()) add("id:${s.sourceId}")
+                                val p = s.path.trim().trimEnd('/')
+                                if (p.isNotBlank()) add("path:$p")
+                            }
+                        }
+                    }
+                    val collabSharedKeys = remember(state.collabShares) {
+                        buildSet {
+                            state.collabShares.forEach { s ->
                                 if (s.sourceId.isNotBlank()) add("id:${s.sourceId}")
                                 val p = s.path.trim().trimEnd('/')
                                 if (p.isNotBlank()) add("path:$p")
@@ -573,10 +606,25 @@ fun FilesTabContent(
                         val isRecycleSpace = state.activeSpace == KodSpace.RECYCLE_BIN
                         items(state.files, key = { it.path }) { rawItem ->
                             val isRecycleEntry = isRecycleSpace || rawItem.isRecycleItem
-                            val isKnownShared = rawItem.isShare ||
-                                (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in sharedKeys) ||
-                                ("path:${rawItem.path.trim().trimEnd('/')}" in sharedKeys)
-                            val item = if (isKnownShared && !rawItem.isShare) rawItem.copy(isShare = true) else rawItem
+                            val normPathKey = "path:${rawItem.path.trim().trimEnd('/')}"
+                            val isKnownLink = rawItem.isLinkShare ||
+                                (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in linkSharedKeys) ||
+                                (normPathKey in linkSharedKeys)
+                            val isKnownCollab = rawItem.isCollabShare ||
+                                (rawItem.sourceId.isNotBlank() && "id:${rawItem.sourceId}" in collabSharedKeys) ||
+                                (normPathKey in collabSharedKeys)
+                            val isKnownShared = rawItem.isShare || isKnownLink || isKnownCollab
+                            val item = if (
+                                isKnownShared != rawItem.isShare ||
+                                isKnownLink != rawItem.isLinkShare ||
+                                isKnownCollab != rawItem.isCollabShare
+                            ) {
+                                rawItem.copy(
+                                    isShare = isKnownShared,
+                                    isLinkShare = isKnownLink,
+                                    isCollabShare = isKnownCollab
+                                )
+                            } else rawItem
                             val allowShareButton = !isRecycleEntry && !isTopLevelSpecialSpace && item.canShare
                             NextcloudFileGridCard(
                                 item = item,

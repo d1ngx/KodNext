@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CorporateFare
 import androidx.compose.material.icons.filled.GroupAdd
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Person
@@ -103,6 +104,9 @@ fun KodShareConfigDialog(
     initialAccessMode: ShareAccessMode = ShareAccessMode.READ_ONLY_DOWNLOAD,
     isEditingExisting: Boolean = false,
     isItemAlreadyShared: Boolean = false,
+    shareOwnerUserId: String = "",
+    shareOwnerName: String = "",
+    currentUserId: String = "",
     existingDetail: KodExistingShareDetail? = null,
     isLoadingDetail: Boolean = false,
     authRoles: List<KodCollabAuthRole> = KodCollabAuthRole.DEFAULT_ROLES,
@@ -124,6 +128,7 @@ fun KodShareConfigDialog(
     var activeTab by remember(initialTab, allowInternalCollab) {
         mutableStateOf(if (allowInternalCollab) initialTab else ShareDialogTab.EXTERNAL_LINK)
     }
+    var userManuallySelectedTab by remember { mutableStateOf(false) }
     var inlineFeedbackMessage by remember { mutableStateOf<String?>(null) }
     var feedbackTrigger by remember { mutableIntStateOf(0) }
     var pendingCancelMode by remember { mutableStateOf<ShareCancelMode?>(null) }
@@ -192,6 +197,16 @@ fun KodShareConfigDialog(
             if (detail.assignments.isNotEmpty() && selectedAssignments.isEmpty()) {
                 selectedAssignments = detail.assignments
             }
+            if (!isEditingExisting &&
+                allowInternalCollab &&
+                !userManuallySelectedTab &&
+                !detail.isLink &&
+                detail.isShareTo &&
+                activeTab != ShareDialogTab.INTERNAL_COLLAB
+            ) {
+                activeTab = ShareDialogTab.INTERNAL_COLLAB
+                onSelectTab?.invoke(ShareDialogTab.INTERNAL_COLLAB)
+            }
         }
     }
 
@@ -225,6 +240,12 @@ fun KodShareConfigDialog(
             DatePicker(state = datePickerState)
         }
     }
+
+    val effectiveOwnerId = existingDetail?.ownerUserId?.ifBlank { shareOwnerUserId } ?: shareOwnerUserId
+    val effectiveOwnerName = existingDetail?.ownerName?.ifBlank { shareOwnerName } ?: shareOwnerName
+    val isSharedByOtherUser = effectiveOwnerId.isNotBlank() &&
+        currentUserId.isNotBlank() &&
+        effectiveOwnerId != currentUserId
 
     val canCancelExternalLink = onCancelShare != null && (
         createdShare != null ||
@@ -355,6 +376,7 @@ fun KodShareConfigDialog(
                                 SegmentedButton(
                                     selected = activeTab == tab,
                                     onClick = {
+                                        userManuallySelectedTab = true
                                         activeTab = tab
                                         onSelectTab?.invoke(tab)
                                     },
@@ -368,6 +390,35 @@ fun KodShareConfigDialog(
                                         maxLines = 1
                                     )
                                 }
+                            }
+                        }
+                    }
+
+                    if (isSharedByOtherUser && createdShare == null) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("share_owner_notice_banner")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Info,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                val ownerLabel = effectiveOwnerName.ifBlank { "其他成员 (ID:$effectiveOwnerId)" }
+                                Text(
+                                    text = "当前共享由 $ownerLabel 创建，取消或修改需具备管理权限",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                                )
                             }
                         }
                     }

@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.kodnext.vkmrzp"
     minSdk = 24
     targetSdk = 36
-    versionCode = 28
-    versionName = "0.15"
+    versionCode = 29
+    versionName = "0.16"
 
     // Fixed update source URL configured exclusively at build/packaging time.
     // Set via Gradle property `-PAPP_UPDATE_URL=https://...`, env var `APP_UPDATE_URL`,

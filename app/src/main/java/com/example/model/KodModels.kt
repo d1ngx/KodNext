@@ -82,7 +82,9 @@ data class KodExistingShareDetail(
     val notDownload: Boolean = false,
     val notView: Boolean = false,
     val canUpload: Boolean = false,
-    val assignments: List<KodCollabAssignment> = emptyList()
+    val assignments: List<KodCollabAssignment> = emptyList(),
+    val ownerUserId: String = "",
+    val ownerName: String = ""
 )
 
 enum class SyncFrequency(val label: String, val intervalMinutes: Long) {
@@ -378,6 +380,11 @@ data class KodFileItem(
     val ext: String = "",
     val isFav: Boolean = false,
     val isShare: Boolean = false,
+    val isLinkShare: Boolean = false,
+    val isCollabShare: Boolean = false,
+    val shareId: String = "",
+    val shareOwnerUserId: String = "",
+    val shareOwnerName: String = "",
     val tags: List<KodTag> = emptyList(),
     val fileThumb: String = "",
     val hashMd5: String = "",

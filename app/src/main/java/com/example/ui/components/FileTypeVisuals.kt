@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderZip
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Link
@@ -845,17 +846,21 @@ fun NextcloudFileListItem(
                     modifier = Modifier.testTag("file_share_${item.name}")
                 ) {
                     if (item.isShare) {
+                        val isCollabOnly = item.isCollabShare && !item.isLinkShare
                         Box(
                             modifier = Modifier
                                 .size(30.dp)
                                 .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer),
+                                .background(
+                                    if (isCollabOnly) MaterialTheme.colorScheme.secondaryContainer
+                                    else MaterialTheme.colorScheme.primaryContainer
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Filled.Link,
-                                contentDescription = "已开启共享，点击管理",
-                                tint = MaterialTheme.colorScheme.primary,
+                                imageVector = if (isCollabOnly) Icons.Filled.Group else Icons.Filled.Link,
+                                contentDescription = if (isCollabOnly) "已开启内部协作，点击管理" else "已开启外链分享，点击管理",
+                                tint = if (isCollabOnly) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -1082,17 +1087,21 @@ fun NextcloudFileGridCard(
                             .testTag("file_grid_share_${item.name}")
                     ) {
                         if (item.isShare) {
+                            val isCollabOnly = item.isCollabShare && !item.isLinkShare
                             Box(
                                 modifier = Modifier
                                     .size(26.dp)
                                     .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primaryContainer),
+                                    .background(
+                                        if (isCollabOnly) MaterialTheme.colorScheme.secondaryContainer
+                                        else MaterialTheme.colorScheme.primaryContainer
+                                    ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = Icons.Filled.Link,
-                                    contentDescription = "已开启共享，点击管理",
-                                    tint = MaterialTheme.colorScheme.primary,
+                                    imageVector = if (isCollabOnly) Icons.Filled.Group else Icons.Filled.Link,
+                                    contentDescription = if (isCollabOnly) "已开启内部协作，点击管理" else "已开启外链分享，点击管理",
+                                    tint = if (isCollabOnly) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(16.dp)
                                 )
                             }

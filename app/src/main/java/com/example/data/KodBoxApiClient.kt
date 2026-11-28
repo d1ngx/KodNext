@@ -412,11 +412,27 @@ class KodBoxApiClient {
             return "Mozilla/5.0 (Linux; Android $androidVersion; $deviceLabel) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36 KodNext/$appVersion"
         }
 
+        internal data class ParsedItemShareInfo(
+            val isShared: Boolean = false,
+            val isLinkShare: Boolean = false,
+            val isCollabShare: Boolean = false,
+            val shareId: String = "",
+            val ownerUserId: String = "",
+            val ownerName: String = ""
+        )
+
         /**
-         * Detects whether a KodBox file/folder JSON entry is currently shared (either via external
-         * link or internal collaboration), handling Int/Boolean/String flags and nested `shareInfo` / `sourceInfo`.
+         * Parses detailed share state (`isShared`, external link vs internal collaboration,
+         * `shareId`, and creator metadata) from a KodBox file/folder JSON entry while strictly
+         * ignoring JSON `null` / `"null"` / `"0"` and explicitly disabled (`isLink=0, isShareTo=0`) records.
          */
-        internal fun parseItemIsShared(obj: JSONObject): Boolean {
+        internal fun parseItemShareInfo(obj: JSONObject): ParsedItemShareInfo {
+            fun cleanVal(target: JSONObject?, key: String): String {
+                if (target == null || !target.has(key) || target.isNull(key)) return ""
+                val raw = target.optString(key).trim()
+                return if (raw.isBlank() || raw == "0" || raw.equals("null", ignoreCase = true)) "" else raw
+            }
+
             fun hasTruthyFlag(target: JSONObject?, key: String): Boolean {
                 if (target == null || !target.has(key) || target.isNull(key)) return false
                 val raw = target.opt(key) ?: return false
@@ -427,30 +443,95 @@ class KodBoxApiClient {
                     else -> false
                 }
             }
-            fun hasActiveShareInfo(target: JSONObject?): Boolean {
-                if (target == null) return false
+
+            fun hasExplicitFalseFlag(target: JSONObject?, key: String): Boolean {
+                if (target == null || !target.has(key) || target.isNull(key)) return false
+                val raw = target.opt(key) ?: return false
+                return when (raw) {
+                    is Boolean -> !raw
+                    is Number -> raw.toInt() == 0
+                    is String -> raw.trim().lowercase(Locale.ROOT).let { it == "0" || it == "false" || it == "no" }
+                    else -> false
+                }
+            }
+
+            fun extractFromTarget(target: JSONObject?): ParsedItemShareInfo? {
+                if (target == null) return null
                 val shareInfo = target.optJSONObject("shareInfo")
                 if (shareInfo != null && shareInfo.length() > 0) {
-                    val sid = shareInfo.optString("shareID").trim()
-                    val hash = shareInfo.optString("shareHash").trim()
-                    if (hasTruthyFlag(shareInfo, "isLink") ||
-                        hasTruthyFlag(shareInfo, "isShareTo") ||
-                        (sid.isNotBlank() && sid != "0") ||
-                        hash.isNotBlank()
-                    ) {
-                        return true
+                    val sid = cleanVal(shareInfo, "shareID").ifBlank { cleanVal(shareInfo, "id") }
+                    val hash = cleanVal(shareInfo, "shareHash")
+                    val linkTrue = hasTruthyFlag(shareInfo, "isLink")
+                    val collabTrue = hasTruthyFlag(shareInfo, "isShareTo")
+                    val linkFalse = hasExplicitFalseFlag(shareInfo, "isLink")
+                    val collabFalse = hasExplicitFalseFlag(shareInfo, "isShareTo")
+
+                    // If shareInfo explicitly declares BOTH isLink=0 and isShareTo=0, the share is disabled/inactive
+                    // even if a stale shareID or shareHash remains attached to the database row.
+                    if (linkFalse && collabFalse) {
+                        return ParsedItemShareInfo(isShared = false)
                     }
+
+                    val userInfo = shareInfo.optJSONObject("userInfo")
+                    val ownerId = cleanVal(shareInfo, "userID")
+                        .ifBlank { cleanVal(userInfo, "userID") }
+                    val ownerName = cleanVal(userInfo, "nickName")
+                        .ifBlank { cleanVal(userInfo, "name") }
+                        .ifBlank { cleanVal(shareInfo, "userName") }
+
+                    val inferredLink = linkTrue || (!linkFalse && hash.isNotBlank() && !collabTrue)
+                    val isActive = linkTrue || collabTrue || (!linkFalse && !collabFalse && (sid.isNotBlank() || hash.isNotBlank()))
+                    if (isActive) {
+                        return ParsedItemShareInfo(
+                            isShared = true,
+                            isLinkShare = inferredLink,
+                            isCollabShare = collabTrue,
+                            shareId = sid,
+                            ownerUserId = ownerId,
+                            ownerName = ownerName
+                        )
+                    }
+                    return ParsedItemShareInfo(isShared = false)
                 }
-                val sid = target.optString("shareID").trim()
-                val hash = target.optString("shareHash").trim()
-                return hasTruthyFlag(target, "isShare") ||
-                    hasTruthyFlag(target, "isShareTo") ||
-                    hasTruthyFlag(target, "isLink") ||
-                    (sid.isNotBlank() && sid != "0") ||
-                    hash.isNotBlank()
+
+                val isShareTrue = hasTruthyFlag(target, "isShare")
+                val isShareFalse = hasExplicitFalseFlag(target, "isShare")
+                val isLinkTrue = hasTruthyFlag(target, "isLink")
+                val isLinkFalse = hasExplicitFalseFlag(target, "isLink")
+                val isShareToTrue = hasTruthyFlag(target, "isShareTo")
+                val isShareToFalse = hasExplicitFalseFlag(target, "isShareTo")
+                val sid = cleanVal(target, "shareID")
+                val hash = cleanVal(target, "shareHash")
+
+                if (isShareFalse && !isLinkTrue && !isShareToTrue) {
+                    return ParsedItemShareInfo(isShared = false)
+                }
+                if (isLinkFalse && isShareToFalse) {
+                    return ParsedItemShareInfo(isShared = false)
+                }
+
+                val isActive = isShareTrue || isLinkTrue || isShareToTrue ||
+                    (!isShareFalse && !isLinkFalse && !isShareToFalse && (sid.isNotBlank() || hash.isNotBlank()))
+                if (!isActive) return null
+
+                return ParsedItemShareInfo(
+                    isShared = true,
+                    isLinkShare = isLinkTrue || (!isLinkFalse && hash.isNotBlank() && !isShareToTrue),
+                    isCollabShare = isShareToTrue,
+                    shareId = sid
+                )
             }
-            return hasActiveShareInfo(obj) || hasActiveShareInfo(obj.optJSONObject("sourceInfo"))
+
+            val topResult = extractFromTarget(obj)
+            if (topResult != null) return topResult
+            return extractFromTarget(obj.optJSONObject("sourceInfo")) ?: ParsedItemShareInfo()
         }
+
+        /**
+         * Detects whether a KodBox file/folder JSON entry is currently shared (either via external
+         * link or internal collaboration), handling Int/Boolean/String flags and nested `shareInfo` / `sourceInfo`.
+         */
+        internal fun parseItemIsShared(obj: JSONObject): Boolean = parseItemShareInfo(obj).isShared
 
         /**
          * Detects whether a KodBox directory entry represents a non-shareable special/system/department
@@ -2883,6 +2964,7 @@ class KodBoxApiClient {
             val existingDetail = if (pseudoItem != null) {
                 fetchItemShareDetail(account, pseudoItem).getOrNull()
             } else null
+            val initiallyActiveOnServer = existingDetail != null
 
             val cleanInputId = shareId.trim()
                 .takeUnless { it.isBlank() || it == "0" || it.equals("null", ignoreCase = true) }
@@ -2910,6 +2992,18 @@ class KodBoxApiClient {
                 error("未找到对应的分享记录，无法取消分享")
             }
 
+            val pathCandidates = buildList {
+                val p = path.trim()
+                if (p.isNotBlank()) add(p)
+                val trimmed = p.trimEnd('/')
+                if (trimmed.isNotBlank() && trimmed != p) add(trimmed)
+                val sidClean = sourceId.trim()
+                if (sidClean.isNotBlank()) {
+                    val canonical = "{source:$sidClean}"
+                    if (canonical !in this) add(canonical)
+                }
+            }
+
             suspend fun isStillActiveOnServer(): Boolean? {
                 if (pseudoItem == null) return null
                 val current = fetchItemShareDetail(account, pseudoItem).getOrNull() ?: return false
@@ -2921,23 +3015,30 @@ class KodBoxApiClient {
             }
 
             suspend fun attemptEditDisable(keepLink: Boolean, keepShareTo: Boolean): Pair<Boolean, String?> {
-                val editParams = mutableMapOf(
-                    "isLink" to if (keepLink) "1" else "0",
-                    "isShareTo" to if (keepShareTo) "1" else "0"
-                )
-                if (resolvedShareId.isNotBlank()) editParams["shareID"] = resolvedShareId
-                if (path.isNotBlank()) editParams["path"] = path
-                if (sourceId.isNotBlank()) editParams["sourceID"] = sourceId
-                if (keepShareTo && existingDetail != null && existingDetail.assignments.isNotEmpty()) {
-                    editParams["authTo"] = buildCollabAuthToJson(existingDetail.assignments)
+                var editError: String? = null
+                val pathsToTry = pathCandidates.ifEmpty { listOf("") }
+                for (candidatePath in pathsToTry) {
+                    val editParams = mutableMapOf(
+                        "isLink" to if (keepLink) "1" else "0",
+                        "isShareTo" to if (keepShareTo) "1" else "0"
+                    )
+                    if (resolvedShareId.isNotBlank()) editParams["shareID"] = resolvedShareId
+                    if (candidatePath.isNotBlank()) editParams["path"] = candidatePath
+                    if (sourceId.isNotBlank()) editParams["sourceID"] = sourceId
+                    if (keepShareTo && existingDetail != null && existingDetail.assignments.isNotEmpty()) {
+                        editParams["authTo"] = buildCollabAuthToJson(existingDetail.assignments)
+                    }
+                    if (keepLink && existingDetail != null) {
+                        editParams["password"] = existingDetail.password
+                        editParams["timeTo"] = if (existingDetail.timeTo > 0L) existingDetail.timeTo.toString() else ""
+                    }
+                    val json = runCatching { executeKodPost(account, "explorer/userShare/edit", editParams) }.getOrNull()
+                        ?: continue
+                    if (isShareMutationEffective(json)) return true to null
+                    val err = extractKodError(json, "").trim()
+                    if (err.isNotBlank()) editError = err
                 }
-                if (keepLink && existingDetail != null) {
-                    editParams["password"] = existingDetail.password
-                    editParams["timeTo"] = if (existingDetail.timeTo > 0L) existingDetail.timeTo.toString() else ""
-                }
-                val json = runCatching { executeKodPost(account, "explorer/userShare/edit", editParams) }.getOrNull()
-                    ?: return false to null
-                return if (isShareMutationEffective(json)) true to null else false to extractKodError(json, "取消分享失败")
+                return false to editError
             }
 
             // Partial cancellation: disable only external link while preserving internal collab, or vice versa
@@ -2953,6 +3054,7 @@ class KodBoxApiClient {
             }
 
             var lastError: String? = null
+            var anyServerMutationSucceeded = false
 
             // Strategy 1: Standard KodBox Web POST /?explorer/userShare/del with dataArr=[shareID] + shareID
             if (resolvedShareId.isNotBlank()) {
@@ -2962,6 +3064,7 @@ class KodBoxApiClient {
                 )
                 val json = runCatching { executeKodPost(account, "explorer/userShare/del", delParams) }.getOrNull()
                 if (json != null && isShareMutationEffective(json)) {
+                    anyServerMutationSucceeded = true
                     if (isStillActiveOnServer() != true) return@runCatching
                 } else if (json != null) {
                     lastError = extractKodError(json, "取消分享失败")
@@ -2974,6 +3077,7 @@ class KodBoxApiClient {
                 )
                 val shareArrJson = runCatching { executeKodPost(account, "explorer/userShare/del", shareArrParams) }.getOrNull()
                 if (shareArrJson != null && isShareMutationEffective(shareArrJson)) {
+                    anyServerMutationSucceeded = true
                     if (isStillActiveOnServer() != true) return@runCatching
                 } else if (shareArrJson != null && lastError.isNullOrBlank()) {
                     lastError = extractKodError(shareArrJson, "取消分享失败")
@@ -2982,7 +3086,10 @@ class KodBoxApiClient {
 
             // Strategy 2: KodBox explorer/userShare/edit with isLink=0 & isShareTo=0
             val (editOk, editErr) = attemptEditDisable(keepLink = false, keepShareTo = false)
-            if (editOk && isStillActiveOnServer() != true) return@runCatching
+            if (editOk) {
+                anyServerMutationSucceeded = true
+                if (isStillActiveOnServer() != true) return@runCatching
+            }
             if (!editErr.isNullOrBlank()) lastError = editErr
 
             // Strategy 3: Some KodBox builds key explorer/userShare/del by sourceID in dataArr
@@ -2993,6 +3100,7 @@ class KodBoxApiClient {
                 )
                 val json = runCatching { executeKodPost(account, "explorer/userShare/del", srcDelParams) }.getOrNull()
                 if (json != null && isShareMutationEffective(json)) {
+                    anyServerMutationSucceeded = true
                     if (isStillActiveOnServer() != true) return@runCatching
                 } else if (json != null) {
                     lastError = extractKodError(json, "取消分享失败")
@@ -3002,7 +3110,7 @@ class KodBoxApiClient {
             // Strategy 4: Legacy object-array payload for explorer/userShare/del
             val objPayload = JSONObject().apply {
                 if (resolvedShareId.isNotBlank()) put("shareID", resolvedShareId)
-                if (path.isNotBlank()) put("path", path)
+                if (pathCandidates.isNotEmpty()) put("path", pathCandidates.first())
                 if (sourceId.isNotBlank()) put("sourceID", sourceId)
             }
             if (objPayload.length() > 0) {
@@ -3014,21 +3122,34 @@ class KodBoxApiClient {
                     )
                 }.getOrNull()
                 if (legacyJson != null && isShareMutationEffective(legacyJson)) {
+                    anyServerMutationSucceeded = true
                     if (isStillActiveOnServer() != true) return@runCatching
                 } else if (legacyJson != null) {
                     lastError = extractKodError(legacyJson, "取消分享失败")
                 }
             }
 
-            if (isStillActiveOnServer() == false) return@runCatching
-            error(lastError ?: "取消分享未生效，请检查权限或稍后重试")
+            // Only confirm cancellation if at least one server mutation succeeded OR a share that
+            // was previously active for this account is now confirmed absent. Never falsely succeed
+            // when the share belonged to another user (fetchItemShareDetail returned null before & after).
+            if ((anyServerMutationSucceeded || initiallyActiveOnServer) && isStillActiveOnServer() == false) {
+                return@runCatching
+            }
+            if (existingDetail != null &&
+                existingDetail.ownerUserId.isNotBlank() &&
+                account.userId.isNotBlank() &&
+                existingDetail.ownerUserId != account.userId
+            ) {
+                error("该共享由其他成员创建，当前账号无权取消")
+            }
+            error(lastError ?: "取消分享未生效，该共享可能由其他成员创建或当前账号无权限取消")
         }
     }
 
     /**
      * Loads existing share metadata (both external link & internal collaboration targets)
      * for a file or folder via `POST /?explorer/userShare/get` (matching KodBox Web),
-     * falling back to `GET` if needed.
+     * falling back to `GET` and normalized path variants (`{source:id}` without trailing slash).
      */
     suspend fun fetchItemShareDetail(
         account: KodAccount,
@@ -3036,24 +3157,50 @@ class KodBoxApiClient {
     ): Result<KodExistingShareDetail?> = withContext(Dispatchers.IO) {
         hydrateAccountSession(account)
         runCatching {
-            val params = buildMap {
-                put("path", item.path)
-                if (item.sourceId.isNotBlank()) put("sourceID", item.sourceId)
-            }
-            val postJson = runCatching { executeKodPost(account, "explorer/userShare/get", params) }.getOrNull()
-            val json = if (postJson != null && isKodSuccess(postJson)) {
-                postJson
-            } else {
-                executeKodGet(account, "explorer/userShare/get", params)
-            }
-            if (!isKodSuccess(json)) return@runCatching null
+            val pathCandidates = buildList {
+                val p = item.path.trim()
+                if (p.isNotBlank()) add(p)
+                val trimmed = p.trimEnd('/')
+                if (trimmed.isNotBlank() && trimmed != p) add(trimmed)
+                val sid = item.sourceId.trim()
+                if (sid.isNotBlank()) {
+                    val canonical = "{source:$sid}"
+                    if (canonical !in this) add(canonical)
+                }
+            }.ifEmpty { listOf("") }
 
-            val rawData = json.opt("data")
-            val data = when (rawData) {
-                is JSONObject -> rawData
-                is JSONArray -> rawData.optJSONObject(0)
-                else -> null
-            } ?: return@runCatching null
+            fun extractShareDataObject(json: JSONObject?): JSONObject? {
+                if (json == null || !isKodSuccess(json)) return null
+                val rawData = json.opt("data")
+                val data = when (rawData) {
+                    is JSONObject -> rawData
+                    is JSONArray -> rawData.optJSONObject(0)
+                    else -> null
+                } ?: return null
+                val shareObj = data.optJSONObject("shareInfo")
+                    ?: data.optJSONObject("sourceInfo")?.optJSONObject("shareInfo")
+                    ?: data.optJSONObject("share")
+                    ?: data
+                val shareId = extractValidShareId(shareObj).ifBlank { extractValidShareId(data) }
+                return if (shareId.isNotBlank()) data else null
+            }
+
+            var resolvedData: JSONObject? = null
+            for (candidatePath in pathCandidates) {
+                val params = buildMap {
+                    if (candidatePath.isNotBlank()) put("path", candidatePath)
+                    if (item.sourceId.isNotBlank()) put("sourceID", item.sourceId)
+                }
+                val postJson = runCatching { executeKodPost(account, "explorer/userShare/get", params) }.getOrNull()
+                resolvedData = extractShareDataObject(postJson)
+                if (resolvedData != null) break
+
+                val getJson = runCatching { executeKodGet(account, "explorer/userShare/get", params) }.getOrNull()
+                resolvedData = extractShareDataObject(getJson)
+                if (resolvedData != null) break
+            }
+
+            val data = resolvedData ?: return@runCatching null
 
             val shareObj = data.optJSONObject("shareInfo")
                 ?: data.optJSONObject("sourceInfo")?.optJSONObject("shareInfo")
@@ -3068,13 +3215,14 @@ class KodBoxApiClient {
                 ?: shareObj.optString("options").trim()
                     .takeIf { it.startsWith("{") }
                     ?.let { runCatching { JSONObject(it) }.getOrNull() }
-            val shareHash = shareObj.optString("shareHash")
-                .takeUnless { it.equals("null", ignoreCase = true) }.orEmpty()
-            val shareUrl = shareObj.optString("url")
-                .takeUnless { it.equals("null", ignoreCase = true) }.orEmpty()
-                .ifBlank {
-                    if (shareHash.isNotBlank()) "${account.serverUrl}/#s/$shareHash" else ""
-                }
+            val shareHash = if (shareObj.isNull("shareHash")) "" else {
+                shareObj.optString("shareHash").takeUnless { it.equals("null", ignoreCase = true) }.orEmpty()
+            }
+            val shareUrl = (if (shareObj.isNull("url")) "" else {
+                shareObj.optString("url").takeUnless { it.equals("null", ignoreCase = true) }.orEmpty()
+            }).ifBlank {
+                if (shareHash.isNotBlank()) "${account.serverUrl}/#s/$shareHash" else ""
+            }
             val authToList = parseCollabAssignments(
                 shareObj.optJSONArray("authTo")
                     ?: data.optJSONArray("authTo")
@@ -3115,18 +3263,37 @@ class KodBoxApiClient {
                 optTruthy(data, "isShareTo") ||
                 authToList.isNotEmpty()
 
+            // If both external link and internal collaboration are explicitly disabled, treat as inactive.
+            if (!isLink && !isShareTo) return@runCatching null
+
+            val userInfo = shareObj.optJSONObject("userInfo") ?: data.optJSONObject("userInfo")
+            val ownerUserId = (if (shareObj.isNull("userID")) "" else shareObj.optString("userID").trim())
+                .takeUnless { it.isBlank() || it == "0" || it.equals("null", ignoreCase = true) }
+                ?: userInfo?.optString("userID")?.trim()
+                    ?.takeUnless { it.isBlank() || it == "0" || it.equals("null", ignoreCase = true) }
+                ?: ""
+            val ownerName = userInfo?.optString("nickName")?.trim()
+                ?.takeUnless { it.isBlank() || it.equals("null", ignoreCase = true) }
+                ?: userInfo?.optString("name")?.trim()
+                    ?.takeUnless { it.isBlank() || it.equals("null", ignoreCase = true) }
+                ?: ""
+
             KodExistingShareDetail(
                 shareId = shareId,
                 isLink = isLink,
                 isShareTo = isShareTo,
                 shareUrl = shareUrl,
                 shareHash = shareHash,
-                password = shareObj.optString("password").takeUnless { it.equals("null", ignoreCase = true) }.orEmpty(),
+                password = if (shareObj.isNull("password")) "" else {
+                    shareObj.optString("password").takeUnless { it.equals("null", ignoreCase = true) }.orEmpty()
+                },
                 timeTo = shareObj.optLongSafe("timeTo"),
                 notDownload = options?.let { optTruthy(it, "notDownload") } == true,
                 notView = options?.let { optTruthy(it, "notView") } == true,
                 canUpload = options?.let { optTruthy(it, "canUpload") || optTruthy(it, "canEdit") } == true,
-                assignments = authToList
+                assignments = authToList,
+                ownerUserId = ownerUserId,
+                ownerName = ownerName
             )
         }
     }
@@ -4244,6 +4411,7 @@ class KodBoxApiClient {
                 ?: obj.optInt("childrenCount", 0).takeIf { it > 0 }
                 ?: obj.optInt("fileCount", 0)
 
+            val parsedShare = parseItemShareInfo(obj)
             into.add(
                 KodFileItem(
                     path = path,
@@ -4255,7 +4423,12 @@ class KodBoxApiClient {
                     createTime = obj.optLongSafe("createTime").takeIf { it > 0L } ?: obj.optLongSafe("ctime"),
                     ext = obj.optString("ext"),
                     isFav = obj.optInt("isFav", 0) == 1 || obj.optBoolean("isFav", false),
-                    isShare = parseItemIsShared(obj),
+                    isShare = parsedShare.isShared,
+                    isLinkShare = parsedShare.isLinkShare,
+                    isCollabShare = parsedShare.isCollabShare,
+                    shareId = parsedShare.shareId,
+                    shareOwnerUserId = parsedShare.ownerUserId,
+                    shareOwnerName = parsedShare.ownerName,
                     tags = tags,
                     fileThumb = obj.optString("fileThumb").trim()
                         .ifBlank { obj.optString("thumb").trim() }

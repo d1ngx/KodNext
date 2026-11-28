@@ -58,10 +58,20 @@ internal class KodShareAndMediaCoordinator(
             return
         }
 
+        val resolvedInitialTab = if (
+            initialTab == ShareDialogTab.EXTERNAL_LINK &&
+            !item.isLinkShare &&
+            item.isCollabShare
+        ) {
+            ShareDialogTab.INTERNAL_COLLAB
+        } else {
+            initialTab
+        }
+
         uiState.update {
             it.copy(
                 shareDialogItem = item,
-                shareDialogInitialTab = initialTab,
+                shareDialogInitialTab = resolvedInitialTab,
                 createdShareResult = null,
                 shareExistingDetail = null,
                 isLoadingShareDetail = true,
@@ -80,7 +90,7 @@ internal class KodShareAndMediaCoordinator(
                 )
             }
         }
-        if (initialTab == ShareDialogTab.INTERNAL_COLLAB) {
+        if (resolvedInitialTab == ShareDialogTab.INTERNAL_COLLAB) {
             ensureCollabDataLoaded()
         }
     }
@@ -163,7 +173,14 @@ internal class KodShareAndMediaCoordinator(
             fileRepository.saveInternalCollabShare(account, item, assignments, existingDetail).fold(
                 onSuccess = { share ->
                     uiState.update { state ->
-                        val updatedState = markItemShareState(state, item.path, item.sourceId, isShared = true)
+                        val updatedState = markItemShareState(
+                            state = state,
+                            targetPath = item.path,
+                            targetSourceId = item.sourceId,
+                            isShared = true,
+                            isCollabShare = true,
+                            shareId = share.shareId
+                        )
                         updatedState.copy(
                             isWorking = false,
                             shareDialogItem = null,
@@ -273,7 +290,14 @@ internal class KodShareAndMediaCoordinator(
             ).fold(
                 onSuccess = { share ->
                     uiState.update { state ->
-                        val updatedState = markItemShareState(state, item.path, item.sourceId, isShared = true)
+                        val updatedState = markItemShareState(
+                            state = state,
+                            targetPath = item.path,
+                            targetSourceId = item.sourceId,
+                            isShared = true,
+                            isLinkShare = true,
+                            shareId = share.shareId
+                        )
                         updatedState.copy(isWorking = false, createdShareResult = share)
                     }
                     emitMessage(if (existingDetail?.isLink == true) "外链分享设置已更新" else "外链已生成")
@@ -371,8 +395,24 @@ internal class KodShareAndMediaCoordinator(
                             shareExistingDetail = null,
                             editingShare = null
                         )
-                        if (!stillShared && (effectivePath.isNotBlank() || effectiveSourceId.isNotBlank())) {
-                            markItemShareState(baseState, effectivePath, effectiveSourceId, isShared = false)
+                        if (effectivePath.isNotBlank() || effectiveSourceId.isNotBlank()) {
+                            markItemShareState(
+                                state = baseState,
+                                targetPath = effectivePath,
+                                targetSourceId = effectiveSourceId,
+                                isShared = stillShared,
+                                isLinkShare = when {
+                                    !stillShared -> false
+                                    cancelMode == ShareCancelMode.EXTERNAL_LINK_ONLY || cancelMode == ShareCancelMode.ALL -> false
+                                    else -> null
+                                },
+                                isCollabShare = when {
+                                    !stillShared -> false
+                                    cancelMode == ShareCancelMode.INTERNAL_COLLAB_ONLY || cancelMode == ShareCancelMode.ALL -> false
+                                    else -> null
+                                },
+                                shareId = if (stillShared) null else ""
+                            )
                         } else {
                             baseState
                         }
@@ -398,7 +438,10 @@ internal class KodShareAndMediaCoordinator(
         state: KodUiState,
         targetPath: String,
         targetSourceId: String,
-        isShared: Boolean
+        isShared: Boolean,
+        isLinkShare: Boolean? = null,
+        isCollabShare: Boolean? = null,
+        shareId: String? = null
     ): KodUiState {
         val normTarget = targetPath.trim().trimEnd('/')
         fun matches(file: KodFileItem): Boolean {
@@ -406,10 +449,19 @@ internal class KodShareAndMediaCoordinator(
             if (normTarget.isNotBlank() && file.path.trim().trimEnd('/') == normTarget) return true
             return false
         }
+        fun applyShare(file: KodFileItem): KodFileItem {
+            if (!matches(file)) return file
+            return file.copy(
+                isShare = isShared,
+                isLinkShare = isLinkShare ?: if (!isShared) false else file.isLinkShare,
+                isCollabShare = isCollabShare ?: if (!isShared) false else file.isCollabShare,
+                shareId = shareId ?: file.shareId
+            )
+        }
         return state.copy(
-            files = state.files.map { if (matches(it)) it.copy(isShare = isShared) else it },
-            homeFavorites = state.homeFavorites.map { if (matches(it)) it.copy(isShare = isShared) else it },
-            homeRecentFiles = state.homeRecentFiles.map { if (matches(it)) it.copy(isShare = isShared) else it }
+            files = state.files.map(::applyShare),
+            homeFavorites = state.homeFavorites.map(::applyShare),
+            homeRecentFiles = state.homeRecentFiles.map(::applyShare)
         )
     }
 

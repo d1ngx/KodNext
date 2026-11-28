@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,7 +18,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
@@ -29,7 +27,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -227,36 +224,15 @@ fun TransfersTabContent(
                                     }
                                     TransferStatus.COMPLETED -> {
                                         if (isCompletedDownload) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                            IconButton(
+                                                onClick = { onShareDownloaded(task) },
+                                                modifier = Modifier.testTag("share_downloaded_${task.id}")
                                             ) {
-                                                FilledTonalButton(
-                                                    onClick = { onOpenDownloaded(task) },
-                                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                                    shape = RoundedCornerShape(10.dp),
-                                                    modifier = Modifier
-                                                        .defaultMinSize(minHeight = 40.dp)
-                                                        .testTag("open_downloaded_${task.id}")
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                                        contentDescription = null,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                    Spacer(modifier = Modifier.width(4.dp))
-                                                    Text("打开", style = MaterialTheme.typography.labelMedium)
-                                                }
-                                                IconButton(
-                                                    onClick = { onShareDownloaded(task) },
-                                                    modifier = Modifier.testTag("share_downloaded_${task.id}")
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Filled.Share,
-                                                        contentDescription = "分享或用其他应用打开",
-                                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
-                                                }
+                                                Icon(
+                                                    imageVector = Icons.Filled.Share,
+                                                    contentDescription = "分享或用其他应用打开",
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
                                             }
                                         } else {
                                             Icon(
